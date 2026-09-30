@@ -252,8 +252,8 @@ func TestFilterFlow(t *testing.T) {
 		t.Errorf("filter footer %q", f)
 	}
 	m = press(m, "enter")
-	if f := plainLines(m)[29]; !strings.Contains(f, "filter: dotfiles  (esc to clear)") {
-		t.Errorf("confirmed filter footer %q", f)
+	if h := plainLines(m)[1]; !strings.Contains(h, "filter: dotfiles") || !strings.Contains(h, "esc clears") {
+		t.Errorf("confirmed filter header %q", h)
 	}
 	// "/" again starts afresh: no stale results.
 	m = press(m, "/")

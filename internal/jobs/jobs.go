@@ -62,6 +62,8 @@ type Host struct {
 	Out     io.Writer // the terminal, for clearing between sessions
 	Command Command
 
+	saved *unix.Termios // terminal settings before asp started
+
 	mu       sync.Mutex
 	jobs     []*Job
 	onScreen *Job // the job whose output is on the terminal's main screen
@@ -69,7 +71,11 @@ type Host struct {
 }
 
 func NewHost(cmd Command) *Host {
-	return &Host{TTY: int(os.Stdin.Fd()), Out: os.Stdout, Command: cmd}
+	h := &Host{TTY: int(os.Stdin.Fd()), Out: os.Stdout, Command: cmd}
+	if t, err := unix.IoctlGetTermios(h.TTY, unix.TCGETS); err == nil {
+		h.saved = t
+	}
+	return h
 }
 
 // NewJob prepares a job; Start runs it.
@@ -220,22 +226,56 @@ func (h *Host) Paused() []*Job {
 	return out
 }
 
-// Close ends every paused job: SIGHUP as a closing terminal would send,
-// then SIGCONT so a stopped process can act on it. Transcripts are written
-// as the conversation goes, so nothing already said is lost.
+// Close ends every paused job the way a shell does when it exits: each in
+// turn is given the terminal, sent SIGHUP (as a closing terminal would) and
+// continued, then waited for, so its goodbye output lands before asp exits
+// and its terminal cleanup runs while it is in the foreground. Signalled
+// in the background instead, an agent re-stops as soon as it touches the
+// terminal and outlives asp. Anything still alive after endTimeout is
+// killed. Finally the terminal settings from before asp started are
+// restored, in case an agent could not.
 func (h *Host) Close() {
-	for _, j := range h.Paused() {
-		_ = syscall.Kill(-j.pid, syscall.SIGHUP)
-		_ = syscall.Kill(-j.pid, syscall.SIGCONT)
+	paused := h.Paused()
+	for _, j := range paused {
+		h.end(j)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for _, j := range h.Paused() {
-		for time.Now().Before(deadline) {
-			var ws syscall.WaitStatus
-			if pid, _ := syscall.Wait4(j.pid, &ws, syscall.WNOHANG, nil); pid == j.pid {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
+	if len(paused) > 0 && h.Out != nil {
+		// Undo modes a killed agent may have left on: cursor hidden,
+		// bracketed paste, focus and mouse reporting, kitty keyboard flags.
+		_, _ = io.WriteString(h.Out, "\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[=0;1u")
+	}
+	if h.saved != nil {
+		_ = unix.IoctlSetTermios(h.TTY, unix.TCSETS, h.saved)
+	}
+}
+
+const endTimeout = 10 * time.Second
+
+func (h *Host) end(j *Job) {
+	_ = unix.IoctlSetPointerInt(h.TTY, unix.TIOCSPGRP, j.pid)
+	_ = syscall.Kill(-j.pid, syscall.SIGHUP) // pending, delivered on continue
+	_ = syscall.Kill(-j.pid, syscall.SIGCONT)
+	deadline := time.Now().Add(endTimeout)
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(j.pid, &ws, syscall.WNOHANG|syscall.WUNTRACED, nil)
+		if err != nil && !errors.Is(err, syscall.EINTR) {
+			break // already reaped
 		}
+		if pid == j.pid && (ws.Exited() || ws.Signaled()) {
+			break
+		}
+		if pid == j.pid && ws.Stopped() { // paused itself again: insist
+			_ = syscall.Kill(-j.pid, syscall.SIGCONT)
+		}
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(-j.pid, syscall.SIGKILL)
+			_, _ = syscall.Wait4(j.pid, &ws, 0, nil)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	j.State = Exited
+	h.drop(j)
+	h.reclaim()
 }

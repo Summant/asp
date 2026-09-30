@@ -42,10 +42,14 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reorder()
 		return m, nil
 	case "enter":
+		if m.suggSel >= 0 && m.suggSel < len(m.sugg) {
+			m.fillToken(m.sugg[m.suggSel])
+			return m, nil
+		}
 		m.closeInput()
 		return m, nil
 	case "ctrl+o":
-		m.openBrowser(modeFilter, m.deps.Home)
+		m.openFinder(modeFilter, m.deps.Home)
 		return m, nil
 	case "tab":
 		if len(m.sugg) > 0 {
@@ -85,6 +89,13 @@ func (m *Model) applyQuery() {
 func (m *Model) fillToken(s string) {
 	v := m.input.Value()
 	i := strings.LastIndex(v, " ") + 1
+	if prefixHelp[s] != "" { // a prefix itself: type its value next
+		m.input.SetValue(v[:i] + s)
+		m.input.CursorEnd()
+		m.applyQuery()
+		m.suggSel = -1
+		return
+	}
 	if len(v)-i < 2 {
 		return
 	}
@@ -132,7 +143,7 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.input.Value() == "" || !isDir(start) {
 				start = m.deps.Home
 			}
-			m.openBrowser(modeNewDir, start)
+			m.openFinder(modeNewDir, start)
 		}
 		return m, nil
 	case "enter":
@@ -241,10 +252,28 @@ func (m *Model) updateSuggestions() {
 
 const maxSugg = 8
 
+// filterPrefixes are offered, with what they do, above an empty filter.
+var filterPrefixes = []string{"f:", "g:"}
+
+var prefixHelp = map[string]string{
+	"f:": "filters file paths",
+	"g:": "filters groups",
+}
+
 // filterSuggestions offers session folders while an f: term is being typed
 // and group names for a g: term.
 func (m Model) filterSuggestions(v string) []string {
 	tok := v[strings.LastIndex(v, " ")+1:]
+	if !strings.Contains(tok, ":") {
+		// Offer the prefixes themselves while a term could still be one.
+		var out []string
+		for _, p := range filterPrefixes {
+			if strings.HasPrefix(p, tok) {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
 	switch {
 	case strings.HasPrefix(tok, "f:"):
 		return rank(m.sessionFolders(), strings.Trim(tok[2:], `"`), maxSugg)
@@ -301,7 +330,11 @@ func (m Model) promptTitle() string {
 	case modeGroupRemove:
 		return "remove from"
 	case modeFilter:
-		if tok := m.input.Value()[strings.LastIndex(m.input.Value(), " ")+1:]; strings.HasPrefix(tok, "g:") {
+		tok := m.input.Value()[strings.LastIndex(m.input.Value(), " ")+1:]
+		switch {
+		case !strings.Contains(tok, ":"):
+			return "filter by"
+		case strings.HasPrefix(tok, "g:"):
 			return "groups"
 		}
 		return "session folders"

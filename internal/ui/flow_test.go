@@ -257,18 +257,18 @@ func TestPausedNewSessionShowsPlaceholderUntilSaved(t *testing.T) {
 
 func TestGroupsAndPrefixedFilter(t *testing.T) {
 	w := newWorld(t, testItems())
-	m := pressRun(w.model, "m")
+	m := pressRun(w.model, "b")
 	m = typeText(m, "arch")
 	m = pressRun(m, "enter")
 	if footer(m) != "added to #arch" {
 		t.Errorf("footer %q", footer(m))
 	}
-	m = pressRun(m, "j", "j", "m")
+	m = pressRun(m, "j", "j", "b")
 	if len(m.sugg) != 1 || m.sugg[0] != "arch" {
 		t.Errorf("existing groups not suggested: %v", m.sugg)
 	}
 	m = pressRun(m, "down", "enter")
-	m = pressRun(m, "j", "m")
+	m = pressRun(m, "j", "b")
 	m = typeText(m, "waybar")
 	m = pressRun(m, "enter")
 
@@ -291,7 +291,7 @@ func TestGroupsAndPrefixedFilter(t *testing.T) {
 	m = pressRun(m, "esc")
 
 	// Remove from a group; the emptied group disappears.
-	m = pressRun(m, "g", "j", "j", "j", "M")
+	m = pressRun(m, "g", "j", "j", "j", "B")
 	if len(m.sugg) != 1 || m.sugg[0] != "waybar" {
 		t.Fatalf("remove suggestions %v", m.sugg)
 	}
@@ -350,30 +350,77 @@ func TestFolderSuggestionsAndBrowser(t *testing.T) {
 		t.Errorf("child suggestions %v", m.sugg)
 	}
 
-	// Browser: ctrl+o opens it at the typed folder.
+	// ctrl+o opens the finder scoped to the typed folder.
 	m = pressRun(m, "backspace", "ctrl+o")
-	if m.mode != modeBrowse || m.browse.dir != filepath.Join(w.home, "projects") {
-		t.Fatalf("browser mode %v dir %q", m.mode, m.browse.dir)
+	if m.mode != modeFind || m.find.scope != filepath.Join(w.home, "projects") {
+		t.Fatalf("finder mode %v scope %q", m.mode, m.find.scope)
 	}
 	out := ansi.Strip(m.View())
 	for _, want := range []string{"./  (this folder)", "asp/", "web/", "notes.txt"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("browser missing %q:\n%s", want, out)
+			t.Errorf("finder missing %q:\n%s", want, out)
 		}
 	}
-	m = typeText(m, "we")
-	m = pressRun(m, "right") // into web
-	if m.browse.dir != filepath.Join(w.home, "projects", "web") {
-		t.Errorf("into: %q", m.browse.dir)
+	m = pressRun(m, "left") // widen to home: every folder, fuzzily
+	m = typeText(m, "dotwayb")
+	if h, _ := m.findSelected(); h.path != filepath.Join(w.home, "dotfiles/.config/waybar") {
+		t.Errorf("best match %q", h.path)
 	}
-	m = pressRun(m, "left", "left") // up twice
-	if m.browse.dir != w.home {
-		t.Errorf("up: %q", m.browse.dir)
+	// The best match sits at the bottom, next to the prompt.
+	lines := plainLines(m)
+	if !strings.Contains(lines[len(lines)-3], "dotfiles/.config/waybar/") {
+		t.Errorf("best match not above the prompt: %q", lines[len(lines)-3])
 	}
-	m = typeText(m, "proj")
 	m = pressRun(m, "enter")
-	if m.mode != modeNewDir || m.input.Value() != collapseHome(filepath.Join(w.home, "projects")) {
+	if m.mode != modeNewDir || m.input.Value() != collapseHome(filepath.Join(w.home, "dotfiles/.config/waybar")) {
 		t.Errorf("chosen: mode %v value %q", m.mode, m.input.Value())
+	}
+}
+
+func TestFinderFiltersTheList(t *testing.T) {
+	items := testItems()
+	w := newWorld(t, items)
+	proj := filepath.Join(w.home, "work", "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.disk[2].Session.CWD = proj
+	m := pressRun(w.model, "f")
+	if m.mode != modeFind || m.find.scope != w.home {
+		t.Fatalf("f: mode %v scope %q", m.mode, m.find.scope)
+	}
+	m = typeText(m, "wp")
+	m = pressRun(m, "enter")
+	if m.mode != modeList || m.query != "f:"+collapseHome(proj) {
+		t.Fatalf("mode %v query %q", m.mode, m.query)
+	}
+	// The key hints stay; the filter is shown in the header.
+	if !strings.Contains(footer(m), "↵ open") {
+		t.Errorf("footer lost its keys: %q", footer(m))
+	}
+	if !strings.Contains(plainLines(m)[1], "filter: f:") {
+		t.Errorf("header %q", plainLines(m)[1])
+	}
+}
+
+func TestFilterPrefixHints(t *testing.T) {
+	w := newWorld(t, testItems())
+	m := pressRun(w.model, "/")
+	out := ansi.Strip(m.View())
+	if !strings.Contains(out, "f:  filters file paths") || !strings.Contains(out, "g:  filters groups") {
+		t.Errorf("prefix hints missing:\n%s", out)
+	}
+	m = typeText(m, "g")
+	if len(m.sugg) != 1 || m.sugg[0] != "g:" {
+		t.Errorf("after g: %v", m.sugg)
+	}
+	m = pressRun(m, "tab")
+	if m.input.Value() != "g:" {
+		t.Errorf("tab filled %q", m.input.Value())
+	}
+	m = pressRun(m, "backspace", "backspace", "down", "enter") // pick f: from the list
+	if m.input.Value() != "f:" || m.mode != modeFilter {
+		t.Errorf("enter on hint: %q mode %v", m.input.Value(), m.mode)
 	}
 }
 
@@ -388,7 +435,12 @@ func TestReadCopyHelp(t *testing.T) {
 	m = pressRun(m, "v")
 	out := ansi.Strip(m.View())
 	if strings.Contains(out, "│") {
-		t.Error("reader should be a single column, with no rule to catch in a selection")
+		t.Error("details view should be a single column, with no rule to catch in a selection")
+	}
+	for _, want := range []string{"agent", "folder   /tmp", "size", "name", "id       " + items[0].Session.ID} {
+		if !strings.Contains(out, want) {
+			t.Errorf("details view missing %q", want)
+		}
 	}
 	m = pressRun(m, "G")
 	if !strings.Contains(ansi.Strip(m.View()), "END") {

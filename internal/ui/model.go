@@ -81,7 +81,7 @@ const (
 	modeNewDir
 	modeGroupAdd
 	modeGroupRemove
-	modeBrowse
+	modeFind
 	modeRead
 	modeHelp
 )
@@ -109,7 +109,7 @@ type Model struct {
 	folders  []string // folder index for suggestions, once built
 	indexing bool
 
-	browse browser
+	find   finder
 	scroll int // reader scroll offset
 
 	deps Deps
@@ -312,8 +312,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next, cmd = m.updatePrompt(msg)
 		case modeNewAgent:
 			next, cmd = m.updateAgent(msg)
-		case modeBrowse:
-			next, cmd = m.updateBrowse(msg)
+		case modeFind:
+			next, cmd = m.updateFind(msg)
 		case modeRead:
 			next, cmd = m.updateRead(msg)
 		case modeHelp:
@@ -324,7 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		nm := next.(Model)
 		nm.updateSuggestions()
-		if nm.mode == modeNewDir || nm.mode == modeBrowse || strings.Contains(nm.input.Value(), "f:") {
+		if nm.mode == modeNewDir || strings.Contains(nm.input.Value(), "f:") {
 			if c := nm.startIndex(); c != nil {
 				cmd = tea.Batch(cmd, c)
 			}
@@ -389,12 +389,14 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 				m.status = "name cleared"
 			}
 		}
-	case "m":
+	case "f":
+		m.openFinder(modeList, m.deps.Home)
+	case "b":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			m.mode = modeGroupAdd
 			m.openInput("")
 		}
-	case "M":
+	case "B":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			if len(it.Groups) == 0 {
 				m.status = "not in any group"

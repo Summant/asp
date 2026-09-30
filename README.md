@@ -47,24 +47,29 @@ asp --version
 | `↵` | open the session — or go back to it if it is paused |
 | `ctrl+z` | *inside Claude or Codex:* pause it and return to asp |
 | `n` | new session: choose the agent, name it, pick a folder |
-| `r` / `x` | rename / clear the name |
-| `m` / `M` | add to a group / remove from a group |
 | `/` | filter; `f:folder` and `g:group` narrow to one field, `"quoted words"` keep spaces |
+| `f` | find a folder (fuzzy, Telescope-style) and show its sessions |
+| `b` / `B` | add to a group / remove from a group |
+| `r` / `x` | rename / clear the name |
+| `v` / `y` | everything about the session, full width / copy the opening message |
 | `←` `→` / `a` `d` | show all sessions, Claude only, or Codex only (remembered) |
-| `v` / `y` | read the whole opening message / copy it |
 | `j` `k` / `↓` `↑` | move |
 | `h` `l` / `pgup` `pgdn` | previous / next page |
 | `g` `G` | first / last |
 | `?` | all keys |
 | `q` | quit — asks first if sessions are paused, since quitting ends them |
 
-In a folder prompt: `↑` `↓` pick a suggestion, `tab` fills it in, `ctrl+o`
-opens the folder browser (`←` up, `→` in, type to narrow, `↵` choose). With
-nothing typed, the folders you have used before are listed.
+The folder finder searches every folder under your home: type to narrow,
+`↑` `↓` to move, `→` to search inside the highlighted folder, `←` to go back
+out, `↵` to choose. `ctrl+o` opens it from the new-session folder prompt and
+from the filter. In the folder prompt itself, `↑` `↓` pick a suggestion and
+`tab` fills it in; with nothing typed, the folders you have used before are
+listed.
 
 Paused sessions are shown with `paused` in the list and a count in the
-header. Quitting asp ends them the way closing a terminal would; everything
-said so far is already in the transcript and can be resumed.
+header. Quitting asp ends them one at a time the way closing a terminal
+would, waiting for each to finish; Claude prints the `claude --resume …`
+line for each as it goes, and everything said so far can be resumed.
 
 ## Where things live
 

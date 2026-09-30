@@ -39,6 +39,16 @@ echo "read $line"
 exit 3
 `
 
+// slowAgent pauses, puts the terminal in raw mode when continued (as
+// Claude does) and takes longer to exit on SIGHUP than asp used to wait.
+const slowAgent = `#!/bin/sh
+trap 'sleep 3; echo got-hup; exit 0' HUP
+trap 'stty raw -echo' CONT
+echo slow-started
+kill -TSTP $$
+while :; do sleep 1; done
+`
+
 func openPTY(t *testing.T) (master, slave *os.File) {
 	t.Helper()
 	m, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
@@ -66,6 +76,9 @@ func TestHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fakeAgent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(slowAgent), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,6 +132,9 @@ func TestHost(t *testing.T) {
 	_, _ = master.Write([]byte{3}) // ctrl+c while the agent runs
 	expect("got-interrupt")
 	expect("STEP interrupted 7")
+	expect("slow-started")
+	expect("got-hup") // quitting waited for the agent to finish
+	expect("STEP closed")
 	expect("HELPER OK")
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("helper failed: %v\n%s", err, strings.Join(out, "\n"))
@@ -145,6 +161,9 @@ func TestHelperHost(t *testing.T) {
 	}
 	fail := func(f string, a ...any) { fmt.Printf("HELPER FAIL "+f+"\n", a...); os.Exit(1) }
 	cmdFor := func(a source.Agent, id string) (string, []string, error) {
+		if a == source.Codex {
+			return "codex", nil, nil
+		}
 		if id == "" {
 			return "claude", nil, nil
 		}
@@ -185,6 +204,23 @@ func TestHelperHost(t *testing.T) {
 		fail("after interrupt: state %v code %d foreground %v", k.State, k.ExitCode, foreground())
 	}
 	fmt.Println("STEP interrupted", k.ExitCode)
+
+	slow := h.NewJob(source.Codex, work, "", "")
+	if err := h.Start(slow); err != nil || slow.State != Paused {
+		fail("slow start: %v %v", err, slow.State)
+	}
+	h.Close()
+	if len(h.Paused()) != 0 || slow.State != Exited || !foreground() {
+		fail("after close: %d paused, state %v, foreground %v", len(h.Paused()), slow.State, foreground())
+	}
+	if err := syscall.Kill(slow.pid, 0); err == nil {
+		fail("slow agent still running after Close")
+	}
+	tio, err := unix.IoctlGetTermios(h.TTY, unix.TCGETS)
+	if err != nil || tio.Lflag&unix.ICANON == 0 || tio.Lflag&unix.ECHO == 0 {
+		fail("terminal left in raw mode after Close: %v", err)
+	}
+	fmt.Println("STEP closed")
 
 	missing := h.NewJob(source.Claude, work+"/nope", "", "")
 	if err := h.Start(missing); err == nil || !foreground() {

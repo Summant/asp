@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/paginator"
@@ -62,15 +61,15 @@ func (m Model) View() string {
 	default:
 		listW, detailW := m.columns()
 		var body []string
-		if m.mode == modeBrowse {
-			body = m.browseRows(listW, m.bodyRows()+1)
+		if m.mode == modeFind {
+			body = m.findRows(listW, m.bodyRows()+1)
 		} else {
 			body = m.listRows(listW, m.bodyRows()+1) // the last row holds the dots
 		}
 		if detailW > 0 {
 			var detail []string
-			if m.mode == modeBrowse {
-				detail = m.browsePreview(detailW)
+			if m.mode == modeFind {
+				detail = m.findPreview(detailW)
 			} else {
 				detail = m.detailRows(detailW)
 			}
@@ -125,6 +124,9 @@ func (m Model) header() string {
 	if n := m.pausedCount(); n > 0 {
 		out += dotSep + statusStyle.Render(fmt.Sprintf("%d paused", n))
 	}
+	if m.query != "" && m.mode != modeFilter {
+		out += dotSep + statusStyle.Render("filter: "+m.query) + helpDesc.Render("  esc clears")
+	}
 	return out
 }
 
@@ -178,11 +180,15 @@ func (m Model) suggestionRows(w, limit int) []string {
 	sugg := m.sugg[:min(len(m.sugg), limit-2)]
 	rows := []string{"", detailHead.Render(m.promptTitle())}
 	for i, s := range sugg {
+		gutter, style := "  ", titleStyle
 		if i == m.suggSel {
-			rows = append(rows, gutterSel.Render(gutterBar)+" "+titleSel.Render(truncateLeft(s, w-gutterW)))
-		} else {
-			rows = append(rows, "  "+titleStyle.Render(truncateLeft(s, w-gutterW)))
+			gutter, style = gutterSel.Render(gutterBar)+" ", titleSel
 		}
+		if help := prefixHelp[s]; help != "" && m.mode == modeFilter {
+			rows = append(rows, gutter+style.Render(padRight(s, 4))+helpDesc.Render(truncate(help, w-gutterW-4)))
+			continue
+		}
+		rows = append(rows, gutter+style.Render(truncateLeft(s, w-gutterW)))
 	}
 	return rows
 }
@@ -248,19 +254,48 @@ func (m Model) detailRows(w int) []string {
 	return rows
 }
 
-// readLines is the reader view: the whole opening message at full width,
-// alone on screen so a mouse selection copies only the message.
+// readLines is the details view: everything the detail pane shows, at full
+// width and untruncated, then the whole opening message — alone on screen,
+// so a mouse selection copies only this session's text.
 func (m Model) readLines() []string {
 	it, ok := m.current()
 	if !ok {
 		return nil
 	}
 	w := m.w - 2*margin
-	rows := []string{
-		detailVal.Render(truncate(it.Title(), w)),
-		metaStyle.Render(truncate(it.Session.Agent.Label()+"  "+sep+"  "+collapseHome(it.Session.CWD)+"  "+sep+"  "+it.Session.Modified.Format("Mon 2 Jan, 15:04"), w)),
-		"",
+	kv := func(k, v string) []string {
+		var out []string
+		for i, l := range wrap(v, max(1, w-detailKeyW), 1<<30) {
+			key := ""
+			if i == 0 {
+				key = k
+			}
+			out = append(out, detailKey.Render(padRight(key, detailKeyW))+detailVal.Render(l))
+		}
+		return out
 	}
+	name := "auto (from the first message)"
+	if it.Named() {
+		name = it.Name
+	}
+	id := "not saved yet"
+	if !it.placeholder() {
+		id = it.Session.ID
+	}
+	rows := []string{detailVal.Render(truncate(it.Title(), w)), ""}
+	rows = append(rows, kv("agent", it.Session.Agent.Label())...)
+	rows = append(rows, kv("folder", collapseHome(it.Session.CWD))...)
+	rows = append(rows, kv("when", it.Session.Modified.Format("Mon 2 Jan 2006, 15:04"))...)
+	rows = append(rows, kv("size", humanCount(it.Session.Messages)+" messages")...)
+	rows = append(rows, kv("name", name)...)
+	rows = append(rows, kv("id", id)...)
+	if len(it.Groups) > 0 {
+		rows = append(rows, kv("groups", "#"+strings.Join(it.Groups, " #"))...)
+	}
+	if it.paused() {
+		rows = append(rows, kv("status", "paused · ↵ to go back")...)
+	}
+	rows = append(rows, "", detailHead.Render("opening message"))
 	if it.Session.Opening == "" {
 		return append(rows, metaStyle.Render("(no messages)"))
 	}
@@ -274,15 +309,16 @@ var helpKeys = [][2]string{
 	{"↵", "open the session · go back to a paused one"},
 	{"ctrl+z", "inside claude or codex: pause it and return here"},
 	{"n", "new session: agent, name, folder"},
-	{"r  x", "rename · clear the name"},
-	{"m  M", "add to a group · remove from a group"},
 	{"/", "filter · f:folder  g:group  \"quoted words\""},
+	{"f", "find a folder and show its sessions"},
+	{"b  B", "add to a group · remove from a group"},
+	{"r  x", "rename · clear the name"},
+	{"v  y", "everything about the session · copy the opening message"},
 	{"←→  a d", "all · claude · codex"},
-	{"v  y", "read the opening message · copy it"},
 	{"j k  ↑↓", "move"},
 	{"h l", "previous · next page"},
 	{"g G", "first · last"},
-	{"ctrl+o", "in a folder prompt or filter: browse folders"},
+	{"ctrl+o", "in a folder prompt or filter: find a folder"},
 	{"q", "quit (ends paused sessions)"},
 }
 
@@ -294,49 +330,69 @@ func helpLines(w int) []string {
 	return append(rows, "", helpDesc.Render("any key to close"))
 }
 
-// browseRows draws the folder browser in the list column.
-func (m Model) browseRows(w, n int) []string {
-	sel, vis := m.browseSelected()
-	rows := []string{metaSel.Render(truncateLeft(collapseHome(m.browse.dir)+"/", w)), ""}
-	room := n - len(rows) - 1
-	start := max(0, m.browse.sel-room+1)
-	for i := start; i < min(len(vis), start+room); i++ {
-		e := vis[i]
-		label := e.name
-		style := metaStyle
-		if e.dir && e.name != here {
-			label += "/"
-			style = titleStyle
-		}
-		if e.name == here {
-			label = here + "  (this folder)"
-		}
-		if e == sel && i == m.browse.sel {
-			rows = append(rows, gutterSel.Render(gutterBar)+" "+titleSel.Render(truncate(label, w-gutterW)))
-		} else {
-			rows = append(rows, "  "+style.Render(truncate(label, w-gutterW)))
-		}
+// findRows draws the finder in the list column: the scope on top, results
+// anchored to the bottom with the best match nearest the prompt.
+func (m Model) findRows(w, n int) []string {
+	f := m.find
+	rows := make([]string, n)
+	rows[0] = detailHead.Render("find folder") + metaStyle.Render("  in  ") + metaSel.Render(truncateLeft(collapseHome(f.scope)+"/", w-14))
+	room := n - 2
+	if len(f.results) == 0 {
+		rows[n-1] = "  " + metaStyle.Render("no folders match")
+		return rows
 	}
-	if len(vis) == 1 && m.input.Value() != "" {
-		rows = append(rows, "  "+metaStyle.Render("nothing matches"))
+	// Scroll so the selection stays visible, counting up from the bottom.
+	first := max(0, f.sel-room+1)
+	for i := first; i < min(len(f.results), first+room); i++ {
+		r := f.results[i]
+		label := f.rel(r.path)
+		if r.path == f.scope {
+			label = "./  (this folder)"
+		}
+		row := n - 1 - (i - first)
+		selected := i == f.sel
+		rows[row] = m.findRow(label, r.pos, w, selected)
 	}
-	for len(rows) < n {
-		rows = append(rows, "")
-	}
-	return rows[:n]
+	return rows
 }
 
-// browsePreview lists the highlighted folder's contents in the detail pane.
-func (m Model) browsePreview(w int) []string {
-	sel, _ := m.browseSelected()
-	dir := m.browse.dir
-	if sel.dir && sel.name != here {
-		dir = filepath.Join(dir, sel.name)
-	} else if !sel.dir {
-		return []string{detailHead.Render("file"), metaStyle.Render(truncate(sel.name, w))}
+// findRow renders one result with its matched letters highlighted.
+func (m Model) findRow(label string, pos []int, w int, selected bool) string {
+	gutter, base := "  ", titleStyle
+	if selected {
+		gutter, base = gutterSel.Render(gutterBar)+" ", titleSel
 	}
-	rows := []string{detailHead.Render(truncateLeft(collapseHome(dir)+"/", w)), ""}
-	entries := readEntries(dir)
+	label = truncateLeft(label, w-gutterW)
+	runes := []rune(label)
+	// Positions refer to the untruncated label; shift them if cut on the left.
+	shift := len([]rune(label)) - len(runes)
+	if strings.HasPrefix(label, ellipsis) {
+		shift = 0
+		pos = nil // a cut label keeps its colour but not the highlights
+	}
+	hl := map[int]bool{}
+	for _, p := range pos {
+		hl[p-shift] = true
+	}
+	var b strings.Builder
+	for i, r := range runes {
+		if hl[i] {
+			b.WriteString(statusStyle.Render(string(r)))
+		} else {
+			b.WriteString(base.Render(string(r)))
+		}
+	}
+	return gutter + b.String()
+}
+
+// findPreview lists the highlighted folder's contents in the detail pane.
+func (m Model) findPreview(w int) []string {
+	h, ok := m.findSelected()
+	if !ok {
+		return nil
+	}
+	rows := []string{detailHead.Render(truncateLeft(collapseHome(h.path)+"/", w)), ""}
+	entries := readEntries(h.path)
 	shown := 0
 	for _, e := range entries {
 		if strings.HasPrefix(e.name, ".") {
@@ -414,8 +470,9 @@ func (m Model) footer(w int) string {
 		return m.promptLine(w, promptLabel.Render("add to group  "), hint("↑↓ pick "+sep+" enter add "+sep+" esc cancel"))
 	case modeGroupRemove:
 		return m.promptLine(w, promptLabel.Render("remove from group  "), hint("↑↓ pick "+sep+" enter remove "+sep+" esc cancel"))
-	case modeBrowse:
-		return m.promptLine(w, promptLabel.Render("browse  "), hint("←→ up/into "+sep+" enter choose "+sep+" esc back"))
+	case modeFind:
+		count := fmt.Sprintf("%d/%d", len(m.find.results), len(m.find.all)+1)
+		return m.promptLine(w, promptLabel.Render("find  "), hint(count+"  "+sep+"  ↵ choose "+sep+" → in "+sep+" ← out "+sep+" esc"))
 	case modeRead:
 		return spread(w, hint("j k scroll "+sep+" y copy "+sep+" esc back"), "")
 	case modeHelp:
@@ -428,13 +485,10 @@ func (m Model) footer(w int) string {
 		}
 		return statusStyle.Render(truncate(m.status, w))
 	}
-	if m.query != "" {
-		return helpDesc.Render(truncate(fmt.Sprintf("filter: %s  (esc to clear)", m.query), w))
-	}
 	if len(m.items) == 0 {
 		return ""
 	}
-	entries := []string{"↵ open", "n new", "r rename", "m group", "/ filter", "←→ view", "? keys", "q quit"}
+	entries := []string{"↵ open", "n new", "/ filter", "f folders", "b group", "r rename", "v details", "←→ view", "? keys", "q quit"}
 	var out string
 	for _, e := range entries {
 		k, d, _ := strings.Cut(e, " ")
