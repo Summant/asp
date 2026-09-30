@@ -89,7 +89,7 @@ func hint(pairs ...string) string {
 		if pairs[i] == "" {
 			continue
 		}
-		parts = append(parts, pairs[i]+" "+pairs[i+1])
+		parts = append(parts, strings.TrimSpace(pairs[i]+" "+pairs[i+1]))
 	}
 	return helpDesc.Render(strings.Join(parts, " "+sep+" "))
 }

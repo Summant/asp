@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -94,12 +95,24 @@ func run() int {
 
 	host := jobs.NewHost(command)
 	defer host.Close() // quitting ends paused sessions
-	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText, Keys: cfg.Keys})
+	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText, Keys: cfg.Keys, Agents: installed()})
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "asp:", err)
 		return 1
 	}
 	return 0
+}
+
+// installed lists the agents whose command is on PATH. Either is enough;
+// with neither, asp still lists any sessions left on disk.
+func installed() []source.Agent {
+	out := []source.Agent{}
+	for _, a := range []source.Agent{source.Claude, source.Codex} {
+		if _, err := exec.LookPath(commands[a].bin); err == nil {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // gather reads every agent's sessions, newest first, with names and groups.

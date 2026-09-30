@@ -79,7 +79,7 @@ const (
 )
 
 // renderItem draws the item's two lines, each exactly width cells.
-func (i Item) renderItem(width int, st itemState) [2]string {
+func (i Item) renderItem(width int, st itemState, groupStyle func(string) lipgloss.Style) [2]string {
 	gutter := "  "
 	title, meta := titleStyle, metaStyle
 	switch st {
@@ -132,7 +132,13 @@ func (i Item) renderItem(width int, st itemState) [2]string {
 	if r := room(); r >= 8 {
 		line2 = meta.Render(truncateLeft(path, r) + mid)
 		if groups != "" {
-			line2 += meta.Render(s) + groupTag.Render(groups)
+			line2 += meta.Render(s)
+			for n, g := range i.Groups {
+				if n > 0 {
+					line2 += " "
+				}
+				line2 += groupStyle(g).Render("#" + g)
+			}
 		}
 	} else { // narrow: keep the leaf folder, cut the rest
 		body := truncate(truncateLeft(path, 12)+mid, max(0, avail-lipgloss.Width(flag)))

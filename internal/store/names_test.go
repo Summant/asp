@@ -106,7 +106,7 @@ func TestState(t *testing.T) {
 	if got := s.State(); !reflect.DeepEqual(got, State{}) {
 		t.Errorf("fresh state = %+v", got)
 	}
-	want := State{View: "group:arch", Tabs: []string{"arch", "wm"}, Last: "codex:abc"}
+	want := State{View: "group:arch", TabList: []string{"agent:codex", "group:arch"}, Last: "codex:abc"}
 	if err := s.SaveState(want); err != nil {
 		t.Fatal(err)
 	}
@@ -145,5 +145,36 @@ func TestGroups(t *testing.T) {
 	reopened, _ := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
 	if got := reopened.GroupsOf("codex", "a"); len(got) != 1 {
 		t.Errorf("not persisted: %v", got)
+	}
+}
+
+func TestStateKeepsAnEmptyTabList(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
+	if err := s.SaveState(State{View: "all", TabList: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.State().TabList; got == nil || len(got) != 0 {
+		t.Errorf("closing every tab must survive a restart, got %#v", got)
+	}
+}
+
+func TestGroupColors(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
+	if err := s.AddToGroup("claude", "a", "arch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGroupColor("arch", "#ff7ac6"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.GroupColors()["arch"]; got != "#ff7ac6" {
+		t.Errorf("colour %q", got)
+	}
+	if err := s.RemoveFromGroup("claude", "a", "arch"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.GroupColors()["arch"]; ok {
+		t.Error("a deleted group kept its colour")
 	}
 }

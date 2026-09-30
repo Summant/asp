@@ -287,6 +287,7 @@ func TestGroupsAndPrefixedFilter(t *testing.T) {
 	if status(m) != "added to #arch" {
 		t.Errorf("status %q", status(m))
 	}
+	m = pressRun(m, "esc") // a new group asks for a colour; skip it
 	m = pressRun(m, "j", "j", "g")
 	if len(m.sugg) != 1 || m.sugg[0] != "arch" {
 		t.Errorf("existing groups not suggested: %v", m.sugg)
@@ -294,7 +295,7 @@ func TestGroupsAndPrefixedFilter(t *testing.T) {
 	m = pressRun(m, "down", "enter")
 	m = pressRun(m, "j", "g")
 	m = typeText(m, "waybar")
-	m = pressRun(m, "enter")
+	m = pressRun(m, "enter", "esc")
 
 	m = pressRun(m, "/")
 	m = typeText(m, "g:arc")

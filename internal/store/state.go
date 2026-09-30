@@ -9,9 +9,13 @@ import (
 // State is what asp remembers between runs, kept in state.json beside
 // names.json.
 type State struct {
-	View string   `json:"view,omitempty"` // "all", "claude", "codex" or "group:<name>"
-	Tabs []string `json:"tabs,omitempty"` // group tabs, in order
-	Last string   `json:"last,omitempty"` // "<agent>:<session-id>" last selected
+	View string   `json:"view,omitempty"` // "all", "agent:claude", "group:<name>", …
+	Tabs []string `json:"tabs,omitempty"` // old format: group tab names only
+	// TabList is every tab after "all", in order: "agent:claude",
+	// "group:arch", … nil means never saved (use the defaults); empty means
+	// the user closed them all.
+	TabList []string `json:"tab_list"`
+	Last    string   `json:"last,omitempty"` // "<agent>:<session-id>" last selected
 }
 
 func (s *Store) statePath() string { return filepath.Join(filepath.Dir(s.path), "state.json") }

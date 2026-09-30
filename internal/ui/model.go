@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -37,67 +38,9 @@ type Deps struct {
 	// Keys maps section → action → keys, as config.Config.Keys; nil uses
 	// the defaults.
 	Keys map[string]map[string][]string
-}
-
-// Tabs: all, claude and codex are fixed; up to maxGroupTabs more show
-// one group each. The open tabs and the current one are remembered.
-const (
-	viewAll = iota
-	viewClaude
-	viewCodex
-	fixedTabs
-)
-
-const maxGroupTabs = 5
-
-// tabLabel is how tab v is shown: "all", "claude", "codex" or the group's
-// name as it is.
-func (m Model) tabLabel(v int) string {
-	switch v {
-	case viewAll:
-		return "all"
-	case viewClaude:
-		return "claude"
-	case viewCodex:
-		return "codex"
-	}
-	return m.groupTabs[v-fixedTabs]
-}
-
-// tabKey is how tab v is saved; group tabs are prefixed so a group called
-// "claude" cannot be mistaken for the claude tab.
-func (m Model) tabKey(v int) string {
-	if v >= fixedTabs {
-		return "group:" + m.groupTabs[v-fixedTabs]
-	}
-	return m.tabLabel(v)
-}
-
-func (m Model) tabCount() int { return fixedTabs + len(m.groupTabs) }
-
-// tabGroup is the group the current tab shows, if it is a group tab.
-func (m Model) tabGroup() (string, bool) {
-	if m.view >= fixedTabs && m.view-fixedTabs < len(m.groupTabs) {
-		return m.groupTabs[m.view-fixedTabs], true
-	}
-	return "", false
-}
-
-// shows reports whether the current tab lists it.
-func (m Model) shows(it Item) bool {
-	switch m.view {
-	case viewAll:
-		return true
-	case viewClaude:
-		return it.Session.Agent == source.Claude
-	case viewCodex:
-		return it.Session.Agent == source.Codex
-	}
-	g, _ := m.tabGroup()
-	if it.placeholder() && it.Job != nil {
-		return it.Job.Group == g // a new session started from this tab
-	}
-	return slices.Contains(it.Groups, g)
+	// Agents are the agents installed here, whose sessions can be started;
+	// nil means both.
+	Agents []source.Agent
 }
 
 type mode int
@@ -112,18 +55,23 @@ const (
 	modeGroupAdd
 	modeGroupRemove
 	modeTabAdd
+	modeGroupColor
+	modeGroupRecolor
 	modeFind
 	modeRead
 	modeHelp
 )
 
 type Model struct {
-	items     []Item
-	order     []int    // indices into items: in the current view and matching query
-	cursor    int      // index into order; the page is derived from it
-	view      int      // current tab: viewAll, viewClaude, viewCodex, or a group tab
-	groupTabs []string // group names shown as tabs, in order
-	query     string   // active filter, live while typing
+	items  []Item
+	order  []int    // indices into items: in the current view and matching query
+	cursor int      // index into order; the page is derived from it
+	view   int      // current tab: 0 is "all", i is tabs[i-1]
+	tabs   []string // every tab after "all": "agent:claude", "group:arch", …
+
+	groupColors map[string]string // group → "#rrggbb"; missing ones are gray
+	colorFor    string            // group the colour prompt is for
+	query       string            // active filter, live while typing
 
 	mode        mode
 	input       textinput.Model
@@ -170,13 +118,10 @@ func New(items []Item, d Deps) Model {
 
 	saved := d.Store.State()
 	m := Model{items: items, deps: d, keys: newKeymap(d.Keys), input: ti, suggSel: -1}
-	for _, g := range saved.Tabs {
-		if g != "" && !slices.Contains(m.groupTabs, g) && len(m.groupTabs) < maxGroupTabs {
-			m.groupTabs = append(m.groupTabs, g)
-		}
-	}
+	m.groupColors = d.Store.GroupColors()
+	m.tabs = m.restoreTabs(saved)
 	for v := range m.tabCount() {
-		if m.tabKey(v) == saved.View {
+		if m.tabKey(v) == saved.View || (saved.View == m.tabLabel(v) && v > 0 && strings.HasPrefix(m.tabKey(v), "agent:")) {
 			m.view = v // reopen on the tab asp was closed on
 		}
 	}
@@ -256,6 +201,7 @@ func (m *Model) refresh() {
 	if m.deps.Reload != nil {
 		m.items = m.deps.Reload()
 	}
+	m.groupColors = m.deps.Store.GroupColors()
 	if m.deps.Host != nil {
 		for _, j := range m.deps.Host.Paused() {
 			m.resolve(j)
@@ -378,7 +324,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeFilter:
 			next, cmd = m.updateFilter(msg)
-		case modeRename, modeNewName, modeNewDir, modeGroupAdd, modeGroupRemove, modeTabAdd:
+		case modeRename, modeNewName, modeNewDir, modeGroupAdd, modeGroupRemove, modeTabAdd, modeGroupColor, modeGroupRecolor:
 			next, cmd = m.updatePrompt(msg)
 		case modeNewAgent:
 			next, cmd = m.updateAgent(msg)
@@ -428,21 +374,17 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	case "view_prev":
 		m.setView((m.view + m.tabCount() - 1) % m.tabCount())
 	case "tab_add":
-		if len(m.groupTabs) >= maxGroupTabs {
-			m.fail("%d group tabs at most; close one with %s first", maxGroupTabs, m.keys.show("list", "tab_close"))
-			break
-		}
 		m.mode = modeTabAdd
 		m.openInput("")
 	case "tab_close":
-		g, ok := m.tabGroup()
-		if !ok {
-			m.say("only group tabs can be closed")
+		if m.view == 0 {
+			m.say("the all tab stays")
 			break
 		}
-		m.groupTabs = slices.Delete(m.groupTabs, m.view-fixedTabs, m.view-fixedTabs+1)
+		label := m.tabLabel(m.view)
+		m.tabs = slices.Delete(m.tabs, m.view-1, m.view)
 		m.setView(min(m.view, m.tabCount()-1))
-		m.say("closed the " + g + " tab")
+		m.say("closed the " + label + " tab")
 	case "end":
 		return m.end()
 	case "filter":
@@ -453,12 +395,21 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	case "open":
 		return m.open()
 	case "new":
-		m.newAgent = source.Claude
-		if m.view == viewCodex {
-			m.newAgent = source.Codex
+		agents := m.agents()
+		if len(agents) == 0 {
+			m.fail("neither claude nor codex is installed (not found on your PATH)")
+			break
+		}
+		m.newAgent = agents[0]
+		if a, ok := m.tabAgent(); ok && slices.Contains(agents, a) {
+			m.newAgent = a
 		}
 		m.newGroup, _ = m.tabGroup() // a new session from a group tab joins that group
 		m.mode = modeNewAgent
+		if len(agents) == 1 { // nothing to choose
+			m.mode = modeNewName
+			m.openInput("")
+		}
 	case "rename":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			m.mode = modeRename
@@ -476,6 +427,18 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 		if it, ok := m.current(); ok && !it.placeholder() {
 			m.mode = modeGroupAdd
 			m.openInput("")
+		}
+	case "group_color":
+		if it, ok := m.current(); ok && !it.placeholder() {
+			switch len(it.Groups) {
+			case 0:
+				m.say("not in any group")
+			case 1:
+				m.askColor(it.Groups[0])
+			default:
+				m.mode = modeGroupRecolor
+				m.openInput("")
+			}
 		}
 	case "group_remove":
 		if it, ok := m.current(); ok && !it.placeholder() {
@@ -550,7 +513,7 @@ func plural(n int) string {
 }
 
 func (m *Model) saveState() {
-	st := store.State{View: m.tabKey(m.view), Tabs: m.groupTabs}
+	st := store.State{View: m.tabKey(m.view), TabList: append([]string{}, m.tabs...)}
 	if it, ok := m.current(); ok && !it.placeholder() {
 		st.Last = it.Key()
 	}

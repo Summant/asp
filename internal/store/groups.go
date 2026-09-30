@@ -94,6 +94,49 @@ func (s *Store) RemoveFromGroup(agent, id, group string) error {
 	g[group] = slices.DeleteFunc(g[group], func(m string) bool { return m == key(agent, id) })
 	if len(g[group]) == 0 {
 		delete(g, group)
+		if c := s.loadColors(); c[group] != "" { // a group that is gone keeps no colour
+			delete(c, group)
+			if b, err := json.MarshalIndent(c, "", "  "); err == nil {
+				_ = writeAtomic(s.colorsPath(), b)
+			}
+		}
 	}
 	return s.saveGroups(g)
+}
+
+// Group colours live in group-colors.json as {"group": "#rrggbb"}. A group
+// without an entry is drawn in the fallback colour.
+
+func (s *Store) colorsPath() string { return filepath.Join(filepath.Dir(s.path), "group-colors.json") }
+
+func (s *Store) loadColors() map[string]string {
+	c := map[string]string{}
+	if b, err := os.ReadFile(s.colorsPath()); err == nil {
+		_ = json.Unmarshal(b, &c)
+	}
+	return c
+}
+
+// GroupColors maps each group that has one to its colour.
+func (s *Store) GroupColors() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadColors()
+}
+
+// SetGroupColor sets a group's colour; "" removes it.
+func (s *Store) SetGroupColor(group, color string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.loadColors()
+	if color == "" {
+		delete(c, group)
+	} else {
+		c[group] = color
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(s.colorsPath(), b)
 }

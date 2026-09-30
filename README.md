@@ -20,7 +20,9 @@ To run:
   signal handling it needs is Linux-only for now. On other systems asp still
   lists, names and groups sessions but cannot open them.
 - **Claude Code** (`claude`) and/or **Codex CLI** (`codex`) on your `PATH`.
-  Either one is enough; the other's sessions simply don't appear.
+  Either one is enough: new sessions use whichever is installed. With
+  neither, asp starts and shows any sessions already on disk (none on a
+  fresh machine).
 - A terminal with Unicode and 24-bit colour (kitty, foot, alacritty, …).
 - For `y` (copy): `wl-copy` on Wayland, `xclip` or `xsel` on X11. Without
   them asp asks the terminal to set the clipboard itself (OSC 52), which
@@ -68,11 +70,12 @@ asp --config FILE    # use another config file
 | `n` | new session: choose the agent, name it, pick a folder |
 | `/` | filter; `f:folder` and `g:group` narrow to one field, `"quoted words"` keep spaces |
 | `f` | browse folders and show the sessions in the one you choose |
-| `g` / `G` | add to a group / remove from a group |
+| `g` / `G` | add to a group (a new group asks for its colour) / remove from a group |
+| `p` | recolour a group of the selected session |
 | `r` / `x` | rename / clear the name |
 | `v` / `y` | everything about the session, full width / copy the opening message |
-| `←` `→` / `a` `d` | switch tabs: all, claude, codex, and your group tabs |
-| `+` / `-` | add a group as a tab (up to 5) / close the current group tab |
+| `←` `→` / `a` `d` | switch tabs |
+| `+` / `-` | add a tab — claude, codex, or a group (up to 5 groups) / close the current tab (all stays) |
 | `j` `k` / `↓` `↑` | move |
 | `h` `l` / `pgup` `pgdn` | previous / next page |
 | `home` `end` | first / last |
@@ -91,10 +94,16 @@ folders you have used before are listed.
 Confirmations and errors appear on the line above the key hints and fade
 after a few seconds.
 
-Group tabs sit in the header beside all, claude and codex; a group tab lists
-that group's sessions, and a session started from it joins the group. asp
-reopens on the tab it was closed on. Group tags on sessions (`#arch`) have
-their own colour, `group` in the config.
+Tabs sit in the header: `all` always, then claude, codex and up to five
+groups, in the order you add them. Any tab but `all` can be closed with `-`
+and brought back with `+`. A group tab lists that group's sessions, and a
+session started from it joins the group. asp reopens on the tab it was
+closed on.
+
+Each group has its own colour, used for its `#tags` on sessions. A new group
+asks for one: type a standard colour name (`pink`, `teal`, `hot pink`, … with
+suggestions) or `#` and a hex code. Skip it and the group is gray. `p`
+changes it later.
 
 Paused sessions are shown with `paused` in the list and a count in the
 header. Quitting asp ends them one at a time the way closing a terminal
@@ -121,7 +130,7 @@ cancel  = ["esc", "ctrl+g"]
 ```
 
 Colour roles: `accent`, `accent_muted`, `secondary`, `text`, `text_strong`,
-`muted`, `subtle`, `rule`, `dot_active`, `error`, `group`. Key sections: `list`,
+`muted`, `subtle`, `rule`, `dot_active`, `error`, and `group` (the gray used for groups without a colour). Key sections: `list`,
 `prompt` (filter, rename, new-session name and folder, groups), `agent`
 (choosing claude or codex), `finder` (the folder browser) and `details`
 (the `v` and `?` pages). The footer, prompts and `?` show whatever you
@@ -135,7 +144,8 @@ twice in one section are reported when asp starts. `ctrl+c` always quits.
   first run it imports `~/.claude/session-names.json` from the old prototype,
   which is only ever read.
 - `~/.config/asp/groups.json` — groups, `{"group": ["<agent>:<id>", …]}`.
-- `~/.config/asp/state.json` — your group tabs, the tab asp was closed on, and the last selected session.
+- `~/.config/asp/group-colors.json` — each group's colour.
+- `~/.config/asp/state.json` — your tabs, the one asp was closed on, and the last selected session.
 
 asp only reads agent data (`~/.claude/projects/`, `~/.codex/sessions/`,
 `~/.codex/archived_sessions/`); it never writes there.

@@ -36,7 +36,7 @@ var Colors = []Color{
 	{"rule", "#2e2a3d", "the line between list and details, inactive page dot"},
 	{"dot_active", "#9aa4b1", "active page dot"},
 	{"error", "#ff5555", "error messages"},
-	{"group", "#ff7ac6", "#group tags on sessions and in the details"},
+	{"group", "#9aa4b1", "#group tags for groups without a colour of their own"},
 }
 
 // Binding is one action and its default keys.
@@ -61,14 +61,15 @@ var Sections = []Section{
 		{"folders", []string{"f"}, "browse folders and show the sessions in one"},
 		{"group_add", []string{"g"}, "add to a group"},
 		{"group_remove", []string{"G"}, "remove from a group"},
+		{"group_color", []string{"p"}, "recolour a group of the selected session"},
 		{"rename", []string{"r"}, "rename"},
 		{"unname", []string{"x"}, "clear the name"},
 		{"details", []string{"v"}, "everything about the session, full width"},
 		{"copy", []string{"y"}, "copy the opening message"},
 		{"view_next", []string{"right", "d"}, "next tab: all → claude → codex → your group tabs"},
 		{"view_prev", []string{"left", "a"}, "previous tab"},
-		{"tab_add", []string{"+"}, "add a group as a tab (up to 5)"},
-		{"tab_close", []string{"-"}, "close the current group tab"},
+		{"tab_add", []string{"+"}, "add a tab: claude, codex, or a group (up to 5 groups)"},
+		{"tab_close", []string{"-"}, "close the current tab (all stays)"},
 		{"end", []string{"c"}, "end the selected paused session (it can be resumed later)"},
 		{"down", []string{"j", "down"}, "move down"},
 		{"up", []string{"k", "up"}, "move up"},

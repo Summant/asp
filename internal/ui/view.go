@@ -121,7 +121,7 @@ func (m Model) header() string {
 		}
 		out += label
 	}
-	if len(m.groupTabs) < maxGroupTabs {
+	if len(m.tabChoices("")) > 0 || m.groupTabCount() < maxGroupTabs {
 		out += dotSep + summaryStyle.Render(m.keys.show("list", "tab_add"))
 	}
 	if n := m.pausedCount(); n > 0 {
@@ -139,6 +139,11 @@ func (m Model) header() string {
 func (m Model) listRows(w, n int) []string {
 	rows := make([]string, 0, n)
 	switch {
+	case len(m.items) == 0 && len(m.agents()) == 0:
+		rows = append(rows,
+			titleStyle.Render("Neither Claude Code nor Codex CLI is installed."),
+			"",
+			helpDesc.Render(truncate("asp lists their sessions once claude or codex is on your PATH.", w)))
 	case len(m.items) == 0:
 		rows = append(rows,
 			titleStyle.Render("No Claude Code or Codex sessions yet."),
@@ -162,7 +167,7 @@ func (m Model) listRows(w, n int) []string {
 			} else if m.query != "" {
 				st = matched
 			}
-			lines := m.items[m.order[i]].renderItem(w, st)
+			lines := m.items[m.order[i]].renderItem(w, st, m.groupStyle)
 			rows = append(rows, lines[0], lines[1], "")
 		}
 	}
@@ -190,6 +195,15 @@ func (m Model) suggestionRows(w, limit int) []string {
 		gutter, style := "  ", titleStyle
 		if i == m.suggSel {
 			gutter, style = gutterSel.Render(gutterBar)+" ", titleSel
+		}
+		if m.mode == modeGroupColor {
+			hex, _ := parseColor(s)
+			rows = append(rows, gutter+fg(lipgloss.Color(hex)).Render(markNamed)+" "+style.Render(padRight(s, 22))+helpDesc.Render(hex))
+			continue
+		}
+		if m.mode == modeTabAdd && (s == "claude" || s == "codex") {
+			rows = append(rows, gutter+style.Render(padRight(s, 12))+helpDesc.Render("every "+s+" session"))
+			continue
 		}
 		if help := prefixHelp[s]; help != "" && m.mode == modeFilter {
 			rows = append(rows, gutter+style.Render(padRight(s, 4))+helpDesc.Render(truncate(help, w-gutterW-4)))
@@ -249,7 +263,7 @@ func (m Model) detailRows(w int) []string {
 		kv("id", id),
 	}
 	if len(it.Groups) > 0 {
-		rows = append(rows, detailKey.Render(padRight("groups", detailKeyW))+groupTag.Render(truncate("#"+strings.Join(it.Groups, " #"), valW)))
+		rows = append(rows, detailKey.Render(padRight("groups", detailKeyW))+m.groupTags(it.Groups, valW))
 	}
 	if it.paused() {
 		rows = append(rows, detailKey.Render(padRight("status", detailKeyW))+statusStyle.Render("paused · "+m.keys.show("list", "open")+" to go back"))
@@ -307,13 +321,7 @@ func (m Model) readLines() []string {
 	rows = append(rows, kv("name", name)...)
 	rows = append(rows, kv("id", id)...)
 	if len(it.Groups) > 0 {
-		for i, l := range wrap("#"+strings.Join(it.Groups, " #"), max(1, w-detailKeyW), 1<<30) {
-			key := ""
-			if i == 0 {
-				key = "groups"
-			}
-			rows = append(rows, detailKey.Render(padRight(key, detailKeyW))+groupTag.Render(l))
-		}
+		rows = append(rows, detailKey.Render(padRight("groups", detailKeyW))+m.groupTags(it.Groups, w-detailKeyW))
 	}
 	if it.paused() {
 		rows = append(rows, kv("status", "paused · "+m.keys.show("list", "open")+" to go back")...)
@@ -405,7 +413,19 @@ func (m Model) footer(w int) string {
 	case modeGroupRemove:
 		return m.promptLine(w, promptLabel.Render("remove from group  "), hint(pick, "pick", k.show("prompt", "confirm"), "remove", k.show("prompt", "cancel"), "cancel"))
 	case modeTabAdd:
-		return m.promptLine(w, promptLabel.Render("new tab for group  "), hint(pick, "pick", k.show("prompt", "confirm"), "add", k.show("prompt", "cancel"), "cancel"))
+		return m.promptLine(w, promptLabel.Render("add a tab  "), hint(pick, "pick", k.show("prompt", "confirm"), "add", k.show("prompt", "cancel"), "cancel"))
+	case modeGroupRecolor:
+		return m.promptLine(w, promptLabel.Render("recolour group  "), hint(pick, "pick", k.show("prompt", "confirm"), "next", k.show("prompt", "cancel"), "cancel"))
+	case modeGroupColor:
+		label := promptLabel.Render("colour for ") + m.groupStyle(m.colorFor).Render("#"+m.colorFor) + promptLabel.Render("  ")
+		right := hint("name or #hex", "", k.show("prompt", "confirm"), "save", k.show("prompt", "cancel"), "skip")
+		if hex, ok := parseColor(m.input.Value()); ok {
+			right = fg(lipgloss.Color(hex)).Render(markNamed+" "+hex) + "   " + right
+		}
+		if m.err != "" {
+			right = errStyle.Render(m.err)
+		}
+		return m.promptLine(w, label, right)
 	case modeFind:
 		r, _ := m.findSelected()
 		var keys string
@@ -474,6 +494,33 @@ func (m Model) footer(w int) string {
 		return truncate(tailStr, w)
 	}
 	return truncate(out+gap+tailStr, w)
+}
+
+// groupStyle is a group's own colour, or the fallback (gray) without one.
+func (m Model) groupStyle(g string) lipgloss.Style {
+	if hex, ok := m.groupColors[g]; ok {
+		return fg(lipgloss.Color(hex))
+	}
+	return groupTag
+}
+
+// groupTags renders "#a #b", each in its group's colour, within w cells.
+func (m Model) groupTags(groups []string, w int) string {
+	var out string
+	used := 0
+	for i, g := range groups {
+		tag := "#" + g
+		if i > 0 {
+			tag = " " + tag
+		}
+		if used+lipgloss.Width(tag) > w {
+			out += metaStyle.Render(truncate(" "+ellipsis, w-used))
+			break
+		}
+		out += m.groupStyle(g).Render(tag)
+		used += lipgloss.Width(tag)
+	}
+	return out
 }
 
 // statusLine is the row above the footer: the latest confirmation or

@@ -195,23 +195,44 @@ func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		val = strings.TrimPrefix(val, "#")
+		isNew := !slices.Contains(m.deps.Store.GroupNames(), val)
 		if err := m.deps.Store.AddToGroup(string(it.Session.Agent), it.Session.ID, val); err != nil {
 			m.fail("could not save: %v", err)
-		} else {
-			m.reloadGroups()
-			m.say("added to #" + val)
+			m.closeInput()
+			return m, nil
+		}
+		m.reloadGroups()
+		m.say("added to #" + val)
+		m.closeInput()
+		if isNew { // a new group gets its colour straight away
+			m.askColor(val)
+		}
+	case modeTabAdd:
+		if val = strings.TrimPrefix(val, "#"); val != "" {
+			m.addTab(val)
 		}
 		m.closeInput()
-	case modeTabAdd:
-		val = strings.TrimPrefix(val, "#")
-		switch {
-		case val == "":
-		case slices.Contains(m.groupTabs, val):
-			m.setView(fixedTabs + slices.Index(m.groupTabs, val))
-		default:
-			m.groupTabs = append(m.groupTabs, val)
-			m.setView(m.tabCount() - 1)
-			m.say("added a tab for " + val)
+	case modeGroupRecolor:
+		if val == "" {
+			m.closeInput()
+			return m, nil
+		}
+		m.askColor(strings.TrimPrefix(val, "#"))
+	case modeGroupColor:
+		if val == "" { // no colour: shown in gray
+			m.closeInput()
+			return m, nil
+		}
+		hex, ok := parseColor(val)
+		if !ok {
+			m.err = "not a colour — try a name like pink, or #ff7ac6"
+			return m, nil
+		}
+		if err := m.deps.Store.SetGroupColor(m.colorFor, hex); err != nil {
+			m.fail("could not save: %v", err)
+		} else {
+			m.groupColors[m.colorFor] = hex
+			m.say("#" + m.colorFor + " is now " + val)
 		}
 		m.closeInput()
 	case modeGroupRemove:
@@ -233,6 +254,7 @@ func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) reloadGroups() {
+	m.groupColors = m.deps.Store.GroupColors()
 	all := m.deps.Store.Groups()
 	for i := range m.items {
 		m.items[i].Groups = all[m.items[i].Key()]
@@ -262,13 +284,17 @@ func (m *Model) updateSuggestions() {
 			m.sugg = rank(it.Groups, strings.TrimPrefix(v, "#"), maxSugg)
 		}
 	case modeTabAdd:
-		var open []string // groups without a tab yet
-		for _, g := range m.deps.Store.GroupNames() {
-			if !slices.Contains(m.groupTabs, g) {
-				open = append(open, g)
-			}
+		m.sugg = m.tabChoices(v)
+	case modeGroupRecolor:
+		if it, ok := m.current(); ok {
+			m.sugg = rank(it.Groups, strings.TrimPrefix(v, "#"), maxSugg)
 		}
-		m.sugg = rank(open, v, maxSugg)
+	case modeGroupColor:
+		if strings.HasPrefix(v, "#") {
+			m.sugg = nil // typing a hex code: the preview shows it
+		} else {
+			m.sugg = rank(colorNames, strings.ReplaceAll(v, " ", ""), maxSugg)
+		}
 	default:
 		m.sugg = nil
 	}
@@ -349,8 +375,12 @@ func (m Model) promptTitle() string {
 			return "recent folders"
 		}
 		return "folders"
-	case modeGroupAdd, modeTabAdd:
+	case modeGroupAdd, modeGroupRecolor:
 		return "groups"
+	case modeTabAdd:
+		return "add a tab"
+	case modeGroupColor:
+		return "colours"
 	case modeGroupRemove:
 		return "remove from"
 	case modeFilter:
@@ -378,4 +408,11 @@ func (m Model) agentChoice() string {
 		return autoMark.Render(markAuto+" ") + helpDesc.Render(a.Label())
 	}
 	return fmt.Sprintf("%s   %s", opt(source.Claude), opt(source.Codex))
+}
+
+// askColor opens the colour prompt for a group.
+func (m *Model) askColor(group string) {
+	m.colorFor = group
+	m.mode = modeGroupColor
+	m.openInput("")
 }

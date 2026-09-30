@@ -499,3 +499,9 @@ func TestNoBackgroundExceptLogo(t *testing.T) {
 		}
 	}
 }
+
+// With the default tabs, claude and codex are tabs 1 and 2.
+const (
+	viewClaude = 1
+	viewCodex  = 2
+)
