@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -8,17 +10,29 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/summant/asp/internal/jobs"
 	"github.com/summant/asp/internal/source"
 	"github.com/summant/asp/internal/store"
 )
 
-// Launch is what main does after the UI exits: either resume a session or
-// start a fresh one, optionally remembering a name for it.
-type Launch struct {
-	Agent    source.Agent
-	Dir      string
-	ResumeID string // empty means "start a new session"
-	Name     string // name to bind once the new session exists
+// Host runs agents on the terminal; see package jobs.
+type Host interface {
+	NewJob(agent source.Agent, dir, resumeID, name string) *jobs.Job
+	Start(*jobs.Job) error  // blocks until the agent pauses or exits
+	Resume(*jobs.Job) error // likewise
+	Paused() []*jobs.Job
+}
+
+// Deps is what the model needs from outside. Only Store is required.
+type Deps struct {
+	Store  *store.Store
+	Reload func() []Item // rescan sessions; nil keeps the initial list
+	Host   Host          // nil: sessions cannot be opened
+	// Exec hands the terminal to run and reports back via done. Default:
+	// tea.Exec, which leaves the alt screen for the duration.
+	Exec func(run func() error, done func(error) tea.Msg) tea.Cmd
+	Copy func(string) error // clipboard
+	Home string             // root of the folder index; default $HOME
 }
 
 // agentView is which agents' sessions are listed. It is remembered between
@@ -62,8 +76,14 @@ const (
 	modeList mode = iota
 	modeFilter
 	modeRename
+	modeNewAgent
 	modeNewName
 	modeNewDir
+	modeGroupAdd
+	modeGroupRemove
+	modeBrowse
+	modeRead
+	modeHelp
 )
 
 type Model struct {
@@ -73,56 +93,83 @@ type Model struct {
 	view   agentView
 	query  string // active filter, live while typing
 
-	mode     mode
-	input    textinput.Model
-	newName  string       // carried from the name prompt to the folder prompt
-	newAgent source.Agent // agent a new session will use
-	status   string       // confirmation; cleared on the next keypress
-	err      string       // prompt validation error; cleared on the next keypress
+	mode        mode
+	input       textinput.Model
+	newName     string       // carried from the name prompt to the folder prompt
+	newAgent    source.Agent // agent a new session will use
+	status      string       // confirmation; cleared on the next keypress
+	statusBad   bool         // status is an error
+	err         string       // prompt validation error; cleared on the next keypress
+	confirmQuit bool         // q pressed once with paused sessions
 
-	store *store.Store
-	w, h  int
+	sugg    []string // suggestions for the active prompt, best first
+	suggSel int      // highlighted suggestion; -1 when none
+	suggFor string   // input value sugg was computed for
 
-	Result *Launch
+	folders  []string // folder index for suggestions, once built
+	indexing bool
+
+	browse browser
+	scroll int // reader scroll offset
+
+	deps Deps
+	w, h int
 }
 
-func New(items []Item, st *store.Store) Model {
+type jobMsg struct {
+	job *jobs.Job
+	err error
+}
+
+func New(items []Item, d Deps) Model {
+	if d.Exec == nil {
+		d.Exec = func(run func() error, done func(error) tea.Msg) tea.Cmd {
+			return tea.Exec(execFunc(run), done)
+		}
+	}
+	if d.Home == "" {
+		d.Home, _ = os.UserHomeDir()
+	}
 	ti := textinput.New()
 	ti.Prompt = ""
-	ti.CharLimit = 200
+	ti.CharLimit = 300
 	ti.Cursor.Style = promptLabel
 	ti.TextStyle = fg(text)
 
-	saved := st.State()
-	m := Model{items: items, store: st, input: ti, view: parseView(saved.View)}
+	saved := d.Store.State()
+	m := Model{items: items, deps: d, input: ti, view: parseView(saved.View), suggSel: -1}
+	m.attachJobs()
 	m.reorder()
-	// Reopen on the session selected last time, if it is still listed.
-	for i, idx := range m.order {
-		if key(m.items[idx]) == saved.Last {
-			m.cursor = i
-		}
-	}
+	m.selectKey(saved.Last)
 	return m
 }
 
-func key(it Item) string { return string(it.Session.Agent) + ":" + it.Session.ID }
+// execFunc adapts a function to tea.ExecCommand. The agent uses the real
+// terminal directly, so the redirections bubbletea offers are ignored.
+type execFunc func() error
+
+func (f execFunc) Run() error        { return f() }
+func (execFunc) SetStdin(io.Reader)  {}
+func (execFunc) SetStdout(io.Writer) {}
+func (execFunc) SetStderr(io.Writer) {}
 
 func (m Model) Init() tea.Cmd { return nil }
 
 // reorder rebuilds the visible list for the current view and query, keeping
 // the selected session selected if it is still listed.
 func (m *Model) reorder() {
-	prev := -1
-	if it, ok := m.currentIndex(); ok {
-		prev = it
+	prev := ""
+	if it, ok := m.current(); ok {
+		prev = it.Key()
 	}
+	q := parseQuery(m.query)
 	type hit struct{ idx, score int }
 	var hits []hit
 	for i, it := range m.items {
 		if !m.view.shows(it.Session.Agent) {
 			continue
 		}
-		if s, ok := match(it.Haystack(), m.query); ok {
+		if s, ok := matchItem(it, q); ok {
 			hits = append(hits, hit{i, s})
 		}
 	}
@@ -131,7 +178,17 @@ func (m *Model) reorder() {
 	for _, h := range hits {
 		m.order = append(m.order, h.idx)
 	}
-	m.cursor = max(0, slices.Index(m.order, prev))
+	m.cursor = 0
+	m.selectKey(prev)
+}
+
+func (m *Model) selectKey(k string) {
+	for i, idx := range m.order {
+		if m.items[idx].Key() == k {
+			m.cursor = i
+			return
+		}
+	}
 }
 
 func (m Model) currentIndex() (int, bool) {
@@ -152,37 +209,143 @@ func (m Model) current() (Item, bool) {
 // perPage is how many 3-row items fit in the list area.
 func (m Model) perPage() int { return max(1, m.bodyRows()/itemRows) }
 
+// refresh rescans sessions and re-attaches paused jobs.
+func (m *Model) refresh() {
+	if m.deps.Reload != nil {
+		m.items = m.deps.Reload()
+	}
+	if m.deps.Host != nil {
+		for _, j := range m.deps.Host.Paused() {
+			m.resolve(j)
+		}
+	}
+	m.attachJobs()
+	m.reorder()
+}
+
+// attachJobs links paused jobs to their sessions. A new session that has
+// not reached the disk yet is shown as a placeholder at the top.
+func (m *Model) attachJobs() {
+	m.items = slices.DeleteFunc(m.items, func(it Item) bool { return it.placeholder() })
+	for i := range m.items {
+		m.items[i].Job = nil
+	}
+	if m.deps.Host == nil {
+		return
+	}
+	var placeholders []Item
+	for _, j := range m.deps.Host.Paused() {
+		if j.SessionID != "" {
+			if i := m.indexOf(string(j.Agent) + ":" + j.SessionID); i >= 0 {
+				m.items[i].Job = j
+				continue
+			}
+		}
+		placeholders = append(placeholders, Item{
+			Session: source.Session{Agent: j.Agent, CWD: j.Dir, Modified: j.Started},
+			Name:    j.Name,
+			Job:     j,
+		})
+	}
+	m.items = append(placeholders, m.items...)
+}
+
+func (m Model) indexOf(key string) int {
+	for i, it := range m.items {
+		if it.Key() == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// resolve finds the session a new job created: an id absent before the
+// launch, in the launch folder, newest if several. Not by mtime — resuming
+// an old session in the same folder bumps that too.
+func (m *Model) resolve(j *jobs.Job) {
+	if j.SessionID != "" || j.ResumeID != "" {
+		return
+	}
+	var found *Item
+	for i := range m.items {
+		it := &m.items[i]
+		if it.placeholder() || it.Session.Agent != j.Agent || j.Before[it.Session.ID] || !samePath(it.Session.CWD, j.Dir) {
+			continue
+		}
+		if found == nil || it.Session.Modified.After(found.Session.Modified) {
+			found = it
+		}
+	}
+	if found == nil {
+		return
+	}
+	j.SessionID = found.Session.ID
+	if j.Name != "" {
+		if err := m.deps.Store.Set(string(j.Agent), j.SessionID, j.Name); err == nil {
+			found.Name = j.Name
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
+	case jobMsg:
+		return m.jobDone(msg)
+	case indexMsg:
+		m.folders, m.indexing = msg, false
+		m.suggFor = "\x00" // recompute
+		m.updateSuggestions()
+		return m, nil
 	case tea.KeyMsg:
-		m.status, m.err = "", ""
+		m.status, m.statusBad, m.err = "", false, ""
+		confirm := m.confirmQuit
+		m.confirmQuit = false
+		var cmd tea.Cmd
+		var next tea.Model
 		switch m.mode {
 		case modeFilter:
-			return m.updateFilter(msg)
-		case modeRename, modeNewName, modeNewDir:
-			return m.updatePrompt(msg)
+			next, cmd = m.updateFilter(msg)
+		case modeRename, modeNewName, modeNewDir, modeGroupAdd, modeGroupRemove:
+			next, cmd = m.updatePrompt(msg)
+		case modeNewAgent:
+			next, cmd = m.updateAgent(msg)
+		case modeBrowse:
+			next, cmd = m.updateBrowse(msg)
+		case modeRead:
+			next, cmd = m.updateRead(msg)
+		case modeHelp:
+			m.mode = modeList
+			return m, nil
 		default:
-			return m.updateList(msg)
+			next, cmd = m.updateList(msg, confirm)
 		}
+		nm := next.(Model)
+		nm.updateSuggestions()
+		if nm.mode == modeNewDir || nm.mode == modeBrowse || strings.Contains(nm.input.Value(), "f:") {
+			if c := nm.startIndex(); c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
+		}
+		return nm, cmd
 	}
 	return m, nil
 }
 
-func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	per := m.perPage()
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return m.quit()
+		return m.quit(confirm)
 	case "esc":
 		if m.query != "" {
 			m.query = ""
 			m.reorder()
 			return m, nil
 		}
-		return m.quit()
+		return m.quit(confirm)
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
@@ -205,28 +368,49 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeFilter
 		m.query = ""
 		m.reorder()
-		m.input.SetValue("")
-		m.input.Focus()
+		m.openInput("")
 	case "enter":
-		if it, ok := m.current(); ok {
-			m.Result = &Launch{Agent: it.Session.Agent, Dir: it.Session.CWD, ResumeID: it.Session.ID}
-			return m.quit()
-		}
+		return m.open()
 	case "n":
 		m.newAgent = source.Claude
 		if m.view == viewCodex {
 			m.newAgent = source.Codex
 		}
-		m.openPrompt(modeNewName, "")
+		m.mode = modeNewAgent
 	case "r":
-		if it, ok := m.current(); ok {
-			m.openPrompt(modeRename, it.Name)
+		if it, ok := m.current(); ok && !it.placeholder() {
+			m.mode = modeRename
+			m.openInput(it.Name)
 		}
 	case "x":
-		if it, ok := m.current(); ok && it.Named() {
+		if it, ok := m.current(); ok && it.Named() && !it.placeholder() {
 			m.setName("")
-			m.status = "name cleared"
+			if m.status == "" {
+				m.status = "name cleared"
+			}
 		}
+	case "m":
+		if it, ok := m.current(); ok && !it.placeholder() {
+			m.mode = modeGroupAdd
+			m.openInput("")
+		}
+	case "M":
+		if it, ok := m.current(); ok && !it.placeholder() {
+			if len(it.Groups) == 0 {
+				m.status = "not in any group"
+				break
+			}
+			m.mode = modeGroupRemove
+			m.openInput("")
+		}
+	case "y":
+		m.copyOpening()
+	case "v":
+		if _, ok := m.current(); ok {
+			m.mode, m.scroll = modeRead, 0
+		}
+	case "?":
+		m.mode, m.scroll = modeHelp, 0
 	}
 	return m, nil
 }
@@ -243,24 +427,55 @@ func (m *Model) setView(v agentView) {
 	m.saveState()
 }
 
-func (m *Model) openPrompt(md mode, value string) {
-	m.mode = md
+func (m *Model) openInput(value string) {
 	m.input.SetValue(value)
 	m.input.CursorEnd()
 	m.input.Focus()
+	m.sugg, m.suggSel, m.suggFor = nil, -1, "\x00"
 }
 
-func (m Model) quit() (tea.Model, tea.Cmd) {
+func (m *Model) closeInput() {
+	m.mode = modeList
+	m.input.Blur()
+	m.sugg, m.suggSel = nil, -1
+}
+
+// quit asks for confirmation first when sessions are paused, since quitting
+// ends them.
+func (m Model) quit(confirmed bool) (tea.Model, tea.Cmd) {
+	if n := m.pausedCount(); n > 0 && !confirmed {
+		m.confirmQuit = true
+		m.status = fmt.Sprintf("%d paused session%s will end  %s  q again to quit", n, plural(n), sep)
+		return m, nil
+	}
 	m.saveState()
 	return m, tea.Quit
 }
 
+func (m Model) pausedCount() int {
+	if m.deps.Host == nil {
+		return 0
+	}
+	return len(m.deps.Host.Paused())
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 func (m *Model) saveState() {
 	st := store.State{View: m.view.String()}
-	if it, ok := m.current(); ok {
-		st.Last = key(it)
+	if it, ok := m.current(); ok && !it.placeholder() {
+		st.Last = it.Key()
 	}
-	_ = m.store.SaveState(st) // losing the view preference is not worth an error
+	_ = m.deps.Store.SaveState(st) // losing the view preference is not worth an error
+}
+
+func (m *Model) fail(format string, a ...any) {
+	m.status, m.statusBad = fmt.Sprintf(format, a...), true
 }
 
 func (m *Model) setName(name string) {
@@ -269,104 +484,123 @@ func (m *Model) setName(name string) {
 		return
 	}
 	s := m.items[i].Session
-	if err := m.store.Set(string(s.Agent), s.ID, name); err != nil {
-		m.status = "could not save: " + err.Error()
+	if err := m.deps.Store.Set(string(s.Agent), s.ID, name); err != nil {
+		m.fail("could not save: %v", err)
 		return
 	}
 	m.items[i].Name = name
 }
 
-func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m.quit()
-	case "esc":
-		m.mode = modeList
-		m.query = ""
-		m.input.Blur()
-		m.reorder()
-		return m, nil
-	case "enter":
-		m.mode = modeList
-		m.input.Blur()
-		return m, nil
-	case "down", "ctrl+n":
-		m.move(1)
-		return m, nil
-	case "up", "ctrl+p":
-		m.move(-1)
-		return m, nil
+func (m *Model) copyOpening() {
+	it, ok := m.current()
+	if !ok || it.Session.Opening == "" {
+		m.status = "nothing to copy"
+		return
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	if v := m.input.Value(); v != m.query {
-		m.query = v
-		m.reorder()
-		m.cursor = 0 // best match first
+	if m.deps.Copy == nil {
+		m.fail("no clipboard available")
+		return
 	}
-	return m, cmd
+	if err := m.deps.Copy(it.Session.Opening); err != nil {
+		m.fail("copy failed: %v", err)
+		return
+	}
+	m.status = "copied the opening message"
 }
 
-func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m.quit()
-	case "esc":
-		m.mode = modeList
-		m.input.Blur()
-		return m, nil
-	case "tab":
-		switch m.mode {
-		case modeNewName: // 'a' would be typed into the name, so tab switches agent
-			if m.newAgent == source.Claude {
-				m.newAgent = source.Codex
-			} else {
-				m.newAgent = source.Claude
-			}
-		case modeNewDir:
-			m.input.SetValue(completeDir(m.input.Value()))
-			m.input.CursorEnd()
-		}
-		return m, nil
-	case "enter":
-		val := strings.TrimSpace(m.input.Value())
-		switch m.mode {
-		case modeRename:
-			m.setName(val)
-			if m.status == "" {
-				m.status = "renamed"
-				if val == "" {
-					m.status = "name cleared"
-				}
-			}
-			m.mode = modeList
-			m.input.Blur()
-		case modeNewName:
-			m.newName = val
-			m.openPrompt(modeNewDir, m.defaultDir())
-		case modeNewDir:
-			dir := expand(val)
-			if !isDir(dir) {
-				m.err = "not a directory"
-				return m, nil
-			}
-			m.Result = &Launch{Agent: m.newAgent, Dir: dir, Name: m.newName}
-			return m.quit()
-		}
+// open resumes the selected session: continues its paused process, or
+// starts the agent with its resume command.
+func (m Model) open() (tea.Model, tea.Cmd) {
+	it, ok := m.current()
+	if !ok {
 		return m, nil
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
+	if m.deps.Host == nil {
+		m.fail("cannot run agents here")
+		return m, nil
+	}
+	m.saveState()
+	if it.paused() {
+		j := it.Job
+		return m, m.deps.Exec(func() error { return m.deps.Host.Resume(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
+	}
+	if !isDir(it.Session.CWD) {
+		m.fail("folder no longer exists: %s", collapseHome(it.Session.CWD))
+		return m, nil
+	}
+	j := m.deps.Host.NewJob(it.Session.Agent, it.Session.CWD, it.Session.ID, "")
+	return m, m.deps.Exec(func() error { return m.deps.Host.Start(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
 }
 
-// defaultDir suggests the highlighted session's folder, else where asp runs.
-func (m Model) defaultDir() string {
-	if it, ok := m.current(); ok {
-		return collapseHome(it.Session.CWD)
+// startNew launches a new session in dir, remembering which of the agent's
+// sessions already existed so the new one can be found and named.
+func (m Model) startNew(dir string) (tea.Model, tea.Cmd) {
+	m.closeInput()
+	if m.deps.Host == nil {
+		m.fail("cannot run agents here")
+		return m, nil
 	}
-	if wd, err := os.Getwd(); err == nil {
-		return collapseHome(wd)
+	m.refresh()
+	before := map[string]bool{}
+	for _, it := range m.items {
+		if it.Session.Agent == m.newAgent && !it.placeholder() {
+			before[it.Session.ID] = true
+		}
 	}
-	return "~"
+	j := m.deps.Host.NewJob(m.newAgent, dir, "", m.newName)
+	j.Before = before
+	return m, m.deps.Exec(func() error { return m.deps.Host.Start(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
+}
+
+// jobDone runs when an agent hands the terminal back.
+func (m Model) jobDone(msg jobMsg) (tea.Model, tea.Cmd) {
+	j := msg.job
+	if m.deps.Reload != nil {
+		m.items = m.deps.Reload()
+	}
+	m.resolve(j)
+	m.attachJobs()
+	m.reorder()
+	switch {
+	case j.SessionID != "":
+		m.selectKey(string(j.Agent) + ":" + j.SessionID)
+	case j.State == jobs.Paused:
+		m.selectKey(fmt.Sprintf("job:%d", j.N))
+	}
+	switch {
+	case msg.err != nil:
+		m.fail("%s: %v", j.Agent, msg.err)
+	case j.State == jobs.Paused:
+		m.status = "paused  " + sep + "  ↵ goes back to it"
+	case j.Name != "" && j.SessionID == "":
+		m.fail("no new %s session was saved, so the name %q was not kept", j.Agent, j.Name)
+	default:
+		m.status = "session ended"
+	}
+	return m, nil
+}
+
+func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "v", "q":
+		m.mode = modeList
+	case "ctrl+c":
+		return m.quit(false)
+	case "j", "down":
+		m.scroll++
+	case "k", "up":
+		m.scroll--
+	case " ", "pgdown", "f":
+		m.scroll += max(1, m.bodyRows()-2)
+	case "b", "pgup":
+		m.scroll -= max(1, m.bodyRows()-2)
+	case "g", "home":
+		m.scroll = 0
+	case "G", "end":
+		m.scroll = 1 << 30
+	case "y":
+		m.copyOpening()
+	}
+	m.scroll = min(max(0, m.scroll), max(0, len(m.readLines())-m.bodyRows()))
+	return m, nil
 }

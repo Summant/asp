@@ -113,3 +113,36 @@ func TestState(t *testing.T) {
 		t.Errorf("state = %+v, want %+v", got, want)
 	}
 }
+
+func TestGroups(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.AddToGroup("claude", "a", "arch"))
+	must(s.AddToGroup("claude", "a", "waybar"))
+	must(s.AddToGroup("codex", "a", "arch"))  // same id, other agent: distinct session
+	must(s.AddToGroup("claude", "a", "arch")) // idempotent
+
+	if got := s.GroupsOf("claude", "a"); len(got) != 2 || got[0] != "arch" || got[1] != "waybar" {
+		t.Errorf("GroupsOf = %v", got)
+	}
+	if got := s.Groups()["codex:a"]; len(got) != 1 || got[0] != "arch" {
+		t.Errorf("Groups()[codex:a] = %v", got)
+	}
+	must(s.RemoveFromGroup("claude", "a", "waybar"))
+	if got := s.GroupNames(); len(got) != 1 || got[0] != "arch" {
+		t.Errorf("emptied group not deleted: %v", got)
+	}
+	reopened, _ := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
+	if got := reopened.GroupsOf("codex", "a"); len(got) != 1 {
+		t.Errorf("not persisted: %v", got)
+	}
+}

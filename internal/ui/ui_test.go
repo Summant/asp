@@ -41,7 +41,7 @@ func testItems() []Item {
 			Name: name,
 		}
 	}
-	return []Item{
+	items := []Item{
 		mk(0, source.Claude, "T00 set up waybar", "", "/tmp"),
 		mk(1, source.Codex, "T01 fix the build", "", home+"/AgentSessionPicker"),
 		mk(2, source.Claude, "T02 日本語のタイトルがとても長い場合にどうなるかを確認するためのテキストです", "", "/"),
@@ -54,6 +54,9 @@ func testItems() []Item {
 		mk(9, source.Codex, "T09 z", "", "/"),
 		mk(10, source.Claude, "T10 last", "", "/"),
 	}
+	items[3].Groups = []string{"arch", "wm"}
+	items[4].Groups = []string{"a-very-long-group-name-that-goes-on"}
+	return items
 }
 
 func keyMsg(s string) tea.KeyMsg {
@@ -106,7 +109,7 @@ func TestAlignment(t *testing.T) {
 		w, h := size[0], size[1]
 		for _, keys := range [][]string{nil, {"j", "j", "j"}, {"l"}, {"/", "t", "0"}} {
 			t.Run(fmt.Sprintf("%dx%d/%v", w, h, keys), func(t *testing.T) {
-				m := press(sized(New(testItems(), testStore(t)), w, h), keys...)
+				m := press(sized(New(testItems(), Deps{Store: testStore(t)}), w, h), keys...)
 				lines := plainLines(m)
 				if len(lines) != h {
 					t.Errorf("%d lines, want %d", len(lines), h)
@@ -155,7 +158,7 @@ func TestAlignment(t *testing.T) {
 }
 
 func TestSelectionGutterSpansBothLines(t *testing.T) {
-	m := press(sized(New(testItems(), testStore(t)), 120, 30), "j")
+	m := press(sized(New(testItems(), Deps{Store: testStore(t)}), 120, 30), "j")
 	lines := plainLines(m)
 	for i, l := range lines {
 		if strings.Contains(l, "codex   T01 ") { // the list row, not the detail title
@@ -174,7 +177,7 @@ func TestSelectionGutterSpansBothLines(t *testing.T) {
 }
 
 func TestPagination(t *testing.T) {
-	m := sized(New(testItems(), testStore(t)), 120, 30) // 24 body rows → 8 per page
+	m := sized(New(testItems(), Deps{Store: testStore(t)}), 120, 30) // 24 body rows → 8 per page
 	if got := m.perPage(); got != 8 {
 		t.Fatalf("perPage = %d", got)
 	}
@@ -199,7 +202,7 @@ func TestPagination(t *testing.T) {
 		t.Error("cursor on item 8 should show page 2")
 	}
 	// One page: no dots.
-	small := sized(New(testItems()[:3], testStore(t)), 120, 30)
+	small := sized(New(testItems()[:3], Deps{Store: testStore(t)}), 120, 30)
 	if strings.Contains(plainLines(small)[27], dot) {
 		t.Error("dots shown for a single page")
 	}
@@ -207,7 +210,7 @@ func TestPagination(t *testing.T) {
 
 func TestViewSwitchingIsRemembered(t *testing.T) {
 	st := testStore(t)
-	m := sized(New(testItems(), st), 120, 30)
+	m := sized(New(testItems(), Deps{Store: st}), 120, 30)
 	if m.view != viewAll || len(m.order) != 11 {
 		t.Fatalf("default view %v with %d items", m.view, len(m.order))
 	}
@@ -230,7 +233,7 @@ func TestViewSwitchingIsRemembered(t *testing.T) {
 	m = press(m, "j", "q")
 	sel, _ := m.current()
 
-	again := New(testItems(), st)
+	again := New(testItems(), Deps{Store: st})
 	if again.view != viewClaude {
 		t.Errorf("reopened in view %v, want claude", again.view)
 	}
@@ -239,49 +242,8 @@ func TestViewSwitchingIsRemembered(t *testing.T) {
 	}
 }
 
-func TestNewSessionFollowsViewAndTabSwitches(t *testing.T) {
-	dir := t.TempDir()
-	m := sized(New(testItems(), testStore(t)), 120, 30)
-	m = press(m, "d", "d", "n") // codex view
-	if m.newAgent != source.Codex {
-		t.Errorf("new session in codex view uses %s", m.newAgent)
-	}
-	if !strings.Contains(plainLines(m)[29], "new codex session") {
-		t.Errorf("label: %q", plainLines(m)[29])
-	}
-	m = press(m, "tab")
-	if !strings.Contains(plainLines(m)[29], "new claude session") {
-		t.Errorf("tab did not switch the label live: %q", plainLines(m)[29])
-	}
-	m = typeText(m, "Waybar redesign")
-	m = press(m, "enter")
-	if m.mode != modeNewDir {
-		t.Fatalf("mode %v after name", m.mode)
-	}
-	m.input.SetValue(filepath.Join(dir, "missing"))
-	m = press(m, "enter")
-	if m.Result != nil || !strings.Contains(plainLines(m)[29], "not a directory") {
-		t.Errorf("bad folder accepted, footer %q", plainLines(m)[29])
-	}
-	m.input.SetValue(dir)
-	m = press(m, "enter")
-	want := Launch{Agent: source.Claude, Dir: dir, Name: "Waybar redesign"}
-	if m.Result == nil || *m.Result != want {
-		t.Errorf("Result = %+v, want %+v", m.Result, want)
-	}
-}
-
-func TestResume(t *testing.T) {
-	m := press(sized(New(testItems(), testStore(t)), 80, 30), "j", "enter")
-	it := testItems()[1]
-	want := Launch{Agent: source.Codex, Dir: it.Session.CWD, ResumeID: it.Session.ID}
-	if m.Result == nil || *m.Result != want {
-		t.Errorf("Result = %+v", m.Result)
-	}
-}
-
 func TestFilterFlow(t *testing.T) {
-	m := sized(New(testItems(), testStore(t)), 120, 30)
+	m := sized(New(testItems(), Deps{Store: testStore(t)}), 120, 30)
 	m = typeText(press(m, "/"), "dotfiles")
 	if len(m.order) != 1 {
 		t.Fatalf("dotfiles matched %d", len(m.order))
@@ -306,14 +268,14 @@ func TestFilterFlow(t *testing.T) {
 		t.Error("pagination shown with no matches")
 	}
 	m = press(m, "enter", "esc")
-	if m.query != "" || len(m.order) != 11 || m.Result != nil {
+	if m.query != "" || len(m.order) != 11 || m.mode != modeList {
 		t.Error("esc should clear the filter before quitting")
 	}
 }
 
 func TestRenameAndStatusClears(t *testing.T) {
 	st := testStore(t)
-	m := sized(New(testItems(), st), 120, 30)
+	m := sized(New(testItems(), Deps{Store: st}), 120, 30)
 	m = typeText(press(m, "r"), "Fresh name")
 	m = press(m, "enter")
 	if n, _ := st.Get("claude", testItems()[0].Session.ID); n != "Fresh name" {
@@ -323,7 +285,7 @@ func TestRenameAndStatusClears(t *testing.T) {
 		t.Errorf("footer %q", f)
 	}
 	m = press(m, "j")
-	if f := plainLines(m)[29]; !strings.Contains(f, "resume") {
+	if f := plainLines(m)[29]; !strings.Contains(f, "open") {
 		t.Errorf("status did not clear on next key: %q", f)
 	}
 	m = press(m, "k", "x")
@@ -340,7 +302,7 @@ func TestRenameAndStatusClears(t *testing.T) {
 }
 
 func TestEmptyState(t *testing.T) {
-	m := sized(New(nil, testStore(t)), 80, 20)
+	m := sized(New(nil, Deps{Store: testStore(t)}), 80, 20)
 	out := ansi.Strip(m.View())
 	for _, want := range []string{"asp", "No Claude Code or Codex sessions yet.", "n  start one"} {
 		if !strings.Contains(out, want) {
@@ -353,7 +315,7 @@ func TestEmptyState(t *testing.T) {
 }
 
 func TestEmptyView(t *testing.T) {
-	m := sized(New(testItems()[:1], testStore(t)), 80, 20) // claude only
+	m := sized(New(testItems()[:1], Deps{Store: testStore(t)}), 80, 20) // claude only
 	m = press(m, "d", "d")
 	if l := plainLines(m)[3]; !strings.Contains(l, "no codex sessions") {
 		t.Errorf("row %q", l)
@@ -363,7 +325,7 @@ func TestEmptyView(t *testing.T) {
 func TestTinyTerminalNeverOverflows(t *testing.T) {
 	for _, s := range [][2]int{{20, 5}, {40, 8}, {59, 12}, {99, 10}, {100, 10}, {200, 60}} {
 		for _, keys := range [][]string{nil, {"/"}, {"n"}, {"r"}} {
-			m := press(sized(New(testItems(), testStore(t)), s[0], s[1]), keys...)
+			m := press(sized(New(testItems(), Deps{Store: testStore(t)}), s[0], s[1]), keys...)
 			for i, l := range plainLines(m) {
 				if lipgloss.Width(l) > s[0] {
 					t.Errorf("%v %v line %d: %d cells > %d", s, keys, i, lipgloss.Width(l), s[0])
@@ -493,7 +455,7 @@ func TestNoBackgroundExceptLogo(t *testing.T) {
 
 	sgr := regexp.MustCompile(`\x1b\[([0-9;]*)m`)
 	for _, keys := range [][]string{nil, {"j"}, {"/", "t"}, {"n"}, {"r"}} {
-		m := press(sized(New(testItems(), testStore(t)), 120, 30), keys...)
+		m := press(sized(New(testItems(), Deps{Store: testStore(t)}), 120, 30), keys...)
 		out := m.View()
 		if !strings.Contains(out, "\x1b[") {
 			t.Fatal("no colour in output; profile not applied")

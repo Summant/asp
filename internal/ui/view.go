@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/paginator"
@@ -40,26 +41,54 @@ func (m Model) View() string {
 		return "" // before the first size message
 	}
 	pad := strings.Repeat(" ", margin)
-	listW, detailW := m.columns()
-	body := m.listRows(listW, m.bodyRows()+1) // the last row holds the dots
-
+	inner := m.w - 2*margin
 	rows := []string{"", pad + m.header(), ""}
-	if detailW > 0 {
-		detail := m.detailRows(detailW)
-		div := " " + ruleStyle.Render(gutterBar) + " "
-		for i, l := range body {
-			d := ""
-			if i < len(detail) {
-				d = detail[i]
-			}
-			rows = append(rows, pad+padRight(l, listW)+div+d)
+
+	switch m.mode {
+	case modeRead, modeHelp:
+		body := m.readLines()
+		if m.mode == modeHelp {
+			body = helpLines(inner)
 		}
-	} else {
-		for _, l := range body {
+		n := m.bodyRows() + 1
+		body = body[min(m.scroll, len(body)):]
+		for i := 0; i < n; i++ {
+			l := ""
+			if i < len(body) {
+				l = body[i]
+			}
 			rows = append(rows, pad+l)
 		}
+	default:
+		listW, detailW := m.columns()
+		var body []string
+		if m.mode == modeBrowse {
+			body = m.browseRows(listW, m.bodyRows()+1)
+		} else {
+			body = m.listRows(listW, m.bodyRows()+1) // the last row holds the dots
+		}
+		if detailW > 0 {
+			var detail []string
+			if m.mode == modeBrowse {
+				detail = m.browsePreview(detailW)
+			} else {
+				detail = m.detailRows(detailW)
+			}
+			div := " " + ruleStyle.Render(gutterBar) + " "
+			for i, l := range body {
+				d := ""
+				if i < len(detail) {
+					d = detail[i]
+				}
+				rows = append(rows, pad+padRight(l, listW)+div+d)
+			}
+		} else {
+			for _, l := range body {
+				rows = append(rows, pad+l)
+			}
+		}
 	}
-	rows = append(rows, "", pad+m.footer(m.w-2*margin))
+	rows = append(rows, "", pad+m.footer(inner))
 
 	// A terminal shorter than the chrome gets the top of the screen; no
 	// line may ever exceed the width, whatever went into it.
@@ -91,12 +120,17 @@ func (m Model) header() string {
 		return summaryStyle.Render(s)
 	}
 	dotSep := summaryStyle.Render("  " + sep + "  ")
-	return logo + "  " + seg(viewAll, len(m.items)) + dotSep +
+	out := logo + "  " + seg(viewAll, len(m.items)) + dotSep +
 		seg(viewClaude, counts[source.Claude]) + dotSep + seg(viewCodex, counts[source.Codex])
+	if n := m.pausedCount(); n > 0 {
+		out += dotSep + statusStyle.Render(fmt.Sprintf("%d paused", n))
+	}
+	return out
 }
 
 // listRows renders exactly n rows of the list column: the current page of
-// items, then the pagination dots on the last row.
+// items, any suggestions for the active prompt at the bottom, and the
+// pagination dots on the last row.
 func (m Model) listRows(w, n int) []string {
 	rows := make([]string, 0, n)
 	switch {
@@ -127,7 +161,30 @@ func (m Model) listRows(w, n int) []string {
 		rows = append(rows, "")
 	}
 	rows = rows[:n-1]
+
+	if sugg := m.suggestionRows(w, n-2); len(sugg) > 0 {
+		copy(rows[len(rows)-len(sugg):], sugg)
+		return append(rows, "")
+	}
 	return append(rows, m.dots(w))
+}
+
+// suggestionRows draws the active prompt's suggestions, a blank line and a
+// heading above them, to sit directly over the footer. At most limit rows.
+func (m Model) suggestionRows(w, limit int) []string {
+	if len(m.sugg) == 0 || limit < 3 {
+		return nil
+	}
+	sugg := m.sugg[:min(len(m.sugg), limit-2)]
+	rows := []string{"", detailHead.Render(m.promptTitle())}
+	for i, s := range sugg {
+		if i == m.suggSel {
+			rows = append(rows, gutterSel.Render(gutterBar)+" "+titleSel.Render(truncateLeft(s, w-gutterW)))
+		} else {
+			rows = append(rows, "  "+titleStyle.Render(truncateLeft(s, w-gutterW)))
+		}
+	}
+	return rows
 }
 
 // dots is the page indicator, hidden when everything fits on one page.
@@ -157,11 +214,15 @@ func (m Model) detailRows(w int) []string {
 	kv := func(k, v string) string {
 		return detailKey.Render(padRight(k, detailKeyW)) + detailVal.Render(v)
 	}
+	valW := w - detailKeyW
 	name := "auto"
 	if it.Named() {
 		name = "custom"
 	}
-	valW := w - detailKeyW
+	id := "not saved yet"
+	if !it.placeholder() {
+		id = ansi.Truncate(it.Session.ID, min(8, valW), "")
+	}
 	rows := []string{
 		detailVal.Render(truncate(it.Title(), w)),
 		"",
@@ -170,13 +231,130 @@ func (m Model) detailRows(w int) []string {
 		kv("when", it.Session.Modified.Format("Mon 2 Jan, 15:04")),
 		kv("size", humanCount(it.Session.Messages)+" messages"),
 		kv("name", name),
-		kv("id", ansi.Truncate(it.Session.ID, min(8, valW), "")),
+		kv("id", id),
+	}
+	if len(it.Groups) > 0 {
+		rows = append(rows, kv("groups", truncate("#"+strings.Join(it.Groups, " #"), valW)))
+	}
+	if it.paused() {
+		rows = append(rows, detailKey.Render(padRight("status", detailKeyW))+statusStyle.Render("paused · ↵ to go back"))
 	}
 	if o := it.Opening(); o != "" {
 		rows = append(rows, "", detailHead.Render("opening message"))
 		for _, l := range wrap(o, w, openingRows) {
 			rows = append(rows, metaStyle.Render(l))
 		}
+	}
+	return rows
+}
+
+// readLines is the reader view: the whole opening message at full width,
+// alone on screen so a mouse selection copies only the message.
+func (m Model) readLines() []string {
+	it, ok := m.current()
+	if !ok {
+		return nil
+	}
+	w := m.w - 2*margin
+	rows := []string{
+		detailVal.Render(truncate(it.Title(), w)),
+		metaStyle.Render(truncate(it.Session.Agent.Label()+"  "+sep+"  "+collapseHome(it.Session.CWD)+"  "+sep+"  "+it.Session.Modified.Format("Mon 2 Jan, 15:04"), w)),
+		"",
+	}
+	if it.Session.Opening == "" {
+		return append(rows, metaStyle.Render("(no messages)"))
+	}
+	for _, l := range wrap(it.Session.Opening, w, 1<<30) {
+		rows = append(rows, detailVal.Render(l))
+	}
+	return rows
+}
+
+var helpKeys = [][2]string{
+	{"↵", "open the session · go back to a paused one"},
+	{"ctrl+z", "inside claude or codex: pause it and return here"},
+	{"n", "new session: agent, name, folder"},
+	{"r  x", "rename · clear the name"},
+	{"m  M", "add to a group · remove from a group"},
+	{"/", "filter · f:folder  g:group  \"quoted words\""},
+	{"←→  a d", "all · claude · codex"},
+	{"v  y", "read the opening message · copy it"},
+	{"j k  ↑↓", "move"},
+	{"h l", "previous · next page"},
+	{"g G", "first · last"},
+	{"ctrl+o", "in a folder prompt or filter: browse folders"},
+	{"q", "quit (ends paused sessions)"},
+}
+
+func helpLines(w int) []string {
+	rows := []string{detailHead.Render("keys"), ""}
+	for _, k := range helpKeys {
+		rows = append(rows, helpKey.Render(padRight(k[0], 10))+helpDesc.Render(truncate(k[1], w-10)))
+	}
+	return append(rows, "", helpDesc.Render("any key to close"))
+}
+
+// browseRows draws the folder browser in the list column.
+func (m Model) browseRows(w, n int) []string {
+	sel, vis := m.browseSelected()
+	rows := []string{metaSel.Render(truncateLeft(collapseHome(m.browse.dir)+"/", w)), ""}
+	room := n - len(rows) - 1
+	start := max(0, m.browse.sel-room+1)
+	for i := start; i < min(len(vis), start+room); i++ {
+		e := vis[i]
+		label := e.name
+		style := metaStyle
+		if e.dir && e.name != here {
+			label += "/"
+			style = titleStyle
+		}
+		if e.name == here {
+			label = here + "  (this folder)"
+		}
+		if e == sel && i == m.browse.sel {
+			rows = append(rows, gutterSel.Render(gutterBar)+" "+titleSel.Render(truncate(label, w-gutterW)))
+		} else {
+			rows = append(rows, "  "+style.Render(truncate(label, w-gutterW)))
+		}
+	}
+	if len(vis) == 1 && m.input.Value() != "" {
+		rows = append(rows, "  "+metaStyle.Render("nothing matches"))
+	}
+	for len(rows) < n {
+		rows = append(rows, "")
+	}
+	return rows[:n]
+}
+
+// browsePreview lists the highlighted folder's contents in the detail pane.
+func (m Model) browsePreview(w int) []string {
+	sel, _ := m.browseSelected()
+	dir := m.browse.dir
+	if sel.dir && sel.name != here {
+		dir = filepath.Join(dir, sel.name)
+	} else if !sel.dir {
+		return []string{detailHead.Render("file"), metaStyle.Render(truncate(sel.name, w))}
+	}
+	rows := []string{detailHead.Render(truncateLeft(collapseHome(dir)+"/", w)), ""}
+	entries := readEntries(dir)
+	shown := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.name, ".") {
+			continue
+		}
+		if shown == m.bodyRows()-3 {
+			rows = append(rows, metaStyle.Render(ellipsis))
+			break
+		}
+		if e.dir {
+			rows = append(rows, detailVal.Render(truncate(e.name+"/", w)))
+		} else {
+			rows = append(rows, metaStyle.Render(truncate(e.name, w)))
+		}
+		shown++
+	}
+	if shown == 0 {
+		rows = append(rows, metaStyle.Render("empty"))
 	}
 	return rows
 }
@@ -203,30 +381,51 @@ func wrap(s string, width, maxLines int) []string {
 
 // footer is the help line, a status message, or the active prompt.
 func (m Model) footer(w int) string {
-	agentLabel := func() string {
+	newLabel := func(step string) string {
 		tag := tagClaude
 		if m.newAgent == source.Codex {
 			tag = tagCodex
 		}
-		return promptLabel.Render("new ") + tag.Render(m.newAgent.Label()) + promptLabel.Render(" session "+sep+" ")
+		return promptLabel.Render("new ") + tag.Render(m.newAgent.Label()) + promptLabel.Render(" session "+sep+" "+step+"  ")
 	}
+	hint := func(s string) string { return helpDesc.Render(s) }
 	switch m.mode {
 	case modeFilter:
-		right := helpDesc.Render(fmt.Sprintf("%d of %d", len(m.order), m.viewTotal()))
+		right := hint(fmt.Sprintf("%d of %d", len(m.order), m.viewTotal()))
+		if len(m.sugg) > 0 {
+			right = hint("↑↓ pick " + sep + " tab fill")
+		}
 		return m.promptLine(w, promptLabel.Render("filter  "), right)
 	case modeRename:
-		return m.promptLine(w, promptLabel.Render("rename  "), helpDesc.Render("enter save "+sep+" esc cancel"))
+		return m.promptLine(w, promptLabel.Render("rename  "), hint("enter save "+sep+" esc cancel"))
+	case modeNewAgent:
+		left := promptLabel.Render("new session  ") + m.agentChoice()
+		right := hint("←→ choose " + sep + " enter next " + sep + " esc cancel")
+		return spread(w, left, right)
 	case modeNewName:
-		return m.promptLine(w, agentLabel()+promptLabel.Render("name  "), helpDesc.Render("tab switch agent "+sep+" esc cancel"))
+		return m.promptLine(w, newLabel("name"), hint("enter next "+sep+" empty keeps the auto label"))
 	case modeNewDir:
-		right := helpDesc.Render("tab complete " + sep + " enter start")
+		right := hint("↑↓ pick " + sep + " tab fill " + sep + " ctrl+o browse " + sep + " enter start")
 		if m.err != "" {
 			right = errStyle.Render(m.err)
 		}
-		return m.promptLine(w, agentLabel()+promptLabel.Render("folder  "), right)
+		return m.promptLine(w, newLabel("folder"), right)
+	case modeGroupAdd:
+		return m.promptLine(w, promptLabel.Render("add to group  "), hint("↑↓ pick "+sep+" enter add "+sep+" esc cancel"))
+	case modeGroupRemove:
+		return m.promptLine(w, promptLabel.Render("remove from group  "), hint("↑↓ pick "+sep+" enter remove "+sep+" esc cancel"))
+	case modeBrowse:
+		return m.promptLine(w, promptLabel.Render("browse  "), hint("←→ up/into "+sep+" enter choose "+sep+" esc back"))
+	case modeRead:
+		return spread(w, hint("j k scroll "+sep+" y copy "+sep+" esc back"), "")
+	case modeHelp:
+		return ""
 	}
 
 	if m.status != "" {
+		if m.statusBad {
+			return errStyle.Render(truncate(m.status, w))
+		}
 		return statusStyle.Render(truncate(m.status, w))
 	}
 	if m.query != "" {
@@ -235,7 +434,7 @@ func (m Model) footer(w int) string {
 	if len(m.items) == 0 {
 		return ""
 	}
-	entries := []string{"↵ resume", "n new", "r rename", "x unname", "/ filter", "←→ view", "q quit"}
+	entries := []string{"↵ open", "n new", "r rename", "m group", "/ filter", "←→ view", "? keys", "q quit"}
 	var out string
 	for _, e := range entries {
 		k, d, _ := strings.Cut(e, " ")
@@ -249,6 +448,16 @@ func (m Model) footer(w int) string {
 		out += next
 	}
 	return out
+}
+
+// spread puts left and right at the two ends of a w-cell line, dropping
+// right when both do not fit.
+func spread(w int, left, right string) string {
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if right == "" || gap < 3 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // promptLine lays out label, text input and a right-aligned hint on one row.
