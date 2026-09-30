@@ -95,3 +95,21 @@ func TestNoLegacyFile(t *testing.T) {
 		t.Errorf("stray files left beside names.json: %v", entries)
 	}
 }
+
+func TestState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenAt(filepath.Join(dir, "names.json"), filepath.Join(dir, "none.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.State(); got != (State{}) {
+		t.Errorf("fresh state = %+v", got)
+	}
+	want := State{View: "codex", Last: "codex:abc"}
+	if err := s.SaveState(want); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.State(); got != want {
+		t.Errorf("state = %+v, want %+v", got, want)
+	}
+}

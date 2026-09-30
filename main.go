@@ -87,7 +87,7 @@ func writeList(w io.Writer, items []ui.Item) {
 		s := it.Session
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			s.Agent, s.ID, s.Modified.Format("2006-01-02 15:04"), strconv.Itoa(s.Messages),
-			field(s.CWD), field(it.Name), field(s.Opening))
+			field(s.CWD), field(it.Name), field(it.Opening()))
 	}
 }
 

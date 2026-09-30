@@ -3,13 +3,15 @@ package ui
 import "strings"
 
 // match reports whether every space-separated term in the query appears as a
-// subsequence of the haystack, so "cdx dot" finds a codex session in dotfiles.
-// Returns a score: lower is better (tighter matches rank higher).
+// case-insensitive subsequence of the haystack (AND), so "cdx dot" finds a
+// codex session in dotfiles. The score is lower for tighter matches: any
+// substring hit outranks any scattered one.
 func match(haystack, query string) (int, bool) {
 	q := strings.Fields(strings.ToLower(query))
 	if len(q) == 0 {
 		return 0, true
 	}
+	haystack = strings.ToLower(haystack)
 	total := 0
 	for _, term := range q {
 		score, ok := subsequence(haystack, term)
@@ -21,29 +23,30 @@ func match(haystack, query string) (int, bool) {
 	return total, true
 }
 
-// subsequence finds term's characters in order within s, scoring by how
-// spread out the match is. An exact substring scores best.
+// subsequence finds term's runes in order within s, scoring by how spread
+// out the match is. An exact substring scores by position alone.
 func subsequence(s, term string) (int, bool) {
 	if idx := strings.Index(s, term); idx >= 0 {
-		return idx, true // contiguous match: score by how early it appears
+		return idx, true
 	}
-	si, start, last := 0, -1, -1
+	hay := []rune(s)
+	hi, start, last := 0, -1, -1
 	for _, c := range term {
-		found := false
-		for ; si < len(s); si++ {
-			if rune(s[si]) == c {
-				if start < 0 {
-					start = si
-				}
-				last = si
-				si++
-				found = true
-				break
-			}
+		for hi < len(hay) && hay[hi] != c {
+			hi++
 		}
-		if !found {
+		if hi == len(hay) {
 			return 0, false
 		}
+		if start < 0 {
+			start = hi
+		}
+		last = hi
+		hi++
 	}
-	return 1000 + (last - start), true // scattered match ranks below any substring
+	return scattered + (last - start), true
 }
+
+// scattered is added to a non-contiguous match's score so it ranks below a
+// substring hit at any position, however long the haystack.
+const scattered = 1 << 32

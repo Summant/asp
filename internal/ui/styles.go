@@ -3,60 +3,67 @@ package ui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Palette matches the user's kitty/Hyprland theme: dark, purple accent,
-// light-blue secondary. Background is left unset so the terminal's own
-// (translucent) background shows through.
+// Colour roles are glow's; the values are the user's kitty/Hyprland palette
+// (SPEC §5). No style sets a background except the logo pill: the terminal is
+// translucent and a painted background would show as a solid block.
 var (
-	Purple = lipgloss.Color("#7a1fff")
-	Blue   = lipgloss.Color("#8ec9ff")
-	Text   = lipgloss.Color("#cfd8e3")
-	Muted  = lipgloss.Color("#6b7280")
-	Dim    = lipgloss.Color("#9aa4b1")
-	Line   = lipgloss.Color("#2e2a3d")
-	Red    = lipgloss.Color("#ff5555")
-	White  = lipgloss.Color("#ffffff")
+	accent      = lipgloss.Color("#7a1fff")
+	accentMuted = lipgloss.Color("#9d7bff")
+	secondary   = lipgloss.Color("#8ec9ff")
+	text        = lipgloss.Color("#cfd8e3")
+	textStrong  = lipgloss.Color("#ffffff")
+	muted       = lipgloss.Color("#6b7280")
+	subtle      = lipgloss.Color("#4a4560")
+	rule        = lipgloss.Color("#2e2a3d")
+	dotActive   = lipgloss.Color("#9aa4b1")
+	errColour   = lipgloss.Color("#ff5555")
 )
 
+func fg(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c) }
+
 var (
-	// Chrome
-	AppTitle = lipgloss.NewStyle().Foreground(White).Background(Purple).
-			Bold(true).Padding(0, 1)
-	Pane = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(Line).Padding(0, 1)
-	PaneLabel = lipgloss.NewStyle().Foreground(Purple).Bold(true)
+	// Chrome. The logo is the only bold text and the only background.
+	logoStyle    = lipgloss.NewStyle().Foreground(textStrong).Background(accent).Bold(true).Padding(0, 1)
+	summaryStyle = fg(subtle)
+	viewOnStyle  = fg(text)
+	ruleStyle    = fg(rule)
 
-	// List items
-	Cursor       = lipgloss.NewStyle().Foreground(Purple).Bold(true)
-	ItemTitle    = lipgloss.NewStyle().Foreground(Text)
-	ItemTitleSel = lipgloss.NewStyle().Foreground(White).Bold(true)
-	ItemMeta     = lipgloss.NewStyle().Foreground(Muted)
-	ItemMetaSel  = lipgloss.NewStyle().Foreground(Dim)
-	NamedDot     = lipgloss.NewStyle().Foreground(Purple)
-	AutoDot      = lipgloss.NewStyle().Foreground(Muted)
+	// List items.
+	gutterSel   = fg(accent)
+	gutterMatch = fg(secondary)
+	titleStyle  = fg(text)
+	titleSel    = fg(accent)
+	metaStyle   = fg(muted)
+	metaSel     = fg(accentMuted)
+	namedMark   = fg(accent)
+	autoMark    = fg(muted)
+	tagClaude   = fg(accent)
+	tagCodex    = fg(secondary)
 
-	// Agent badges
-	BadgeClaude = lipgloss.NewStyle().Foreground(Purple).Bold(true)
-	BadgeCodex  = lipgloss.NewStyle().Foreground(Blue).Bold(true)
+	// Pagination.
+	dotOn  = fg(dotActive)
+	dotOff = fg(rule)
 
-	// Detail pane
-	DetailKey   = lipgloss.NewStyle().Foreground(Muted)
-	DetailVal   = lipgloss.NewStyle().Foreground(Text)
-	DetailTitle = lipgloss.NewStyle().Foreground(Purple).Bold(true)
-	DetailHead  = lipgloss.NewStyle().Foreground(Blue)
+	// Detail pane.
+	detailKey  = fg(muted)
+	detailVal  = fg(text)
+	detailHead = fg(secondary)
 
-	// Footer / prompts
-	Help      = lipgloss.NewStyle().Foreground(Muted)
-	HelpKey   = lipgloss.NewStyle().Foreground(Blue)
-	Prompt    = lipgloss.NewStyle().Foreground(Purple).Bold(true)
-	Err       = lipgloss.NewStyle().Foreground(Red)
-	FilterHit = lipgloss.NewStyle().Foreground(Blue).Bold(true)
+	// Footer and prompts.
+	helpKey     = fg(secondary)
+	helpDesc    = fg(muted)
+	promptLabel = fg(accent)
+	statusStyle = fg(secondary)
+	errStyle    = fg(errColour)
 )
 
-// Symbols used across the UI.
+// Every symbol here renders at one cell in JetBrainsMono Nerd Font; no Nerd
+// Font private-use icons, which widen inconsistently.
 const (
-	DotFilled = "●"
-	DotHollow = "○"
-	CursorBar = "▌"
-	Sep       = "·"
-	Ellipsis  = "…"
+	gutterBar = "│"
+	markNamed = "●"
+	markAuto  = "○"
+	dot       = "•"
+	sep       = "·"
+	ellipsis  = "…"
 )

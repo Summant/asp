@@ -91,8 +91,6 @@ func (s *Store) Set(agent, id, name string) error {
 	return s.save()
 }
 
-// save writes atomically: a crash mid-write leaves the previous file intact.
-// The temp file is unique so two asp instances cannot clobber each other's.
 func (s *Store) save() error {
 	s.mu.Lock()
 	b, err := json.MarshalIndent(s.names, "", "  ")
@@ -100,7 +98,14 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(s.path)
+	return writeAtomic(s.path, b)
+}
+
+// writeAtomic writes b to path so a crash mid-write leaves the previous file
+// intact. The temp file is unique so two asp instances cannot clobber each
+// other's.
+func writeAtomic(path string, b []byte) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -120,7 +125,7 @@ func (s *Store) save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), s.path)
+	return os.Rename(tmp.Name(), path)
 }
 
 // Path is exposed so the UI can tell the user where names are kept.

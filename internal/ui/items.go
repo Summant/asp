@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/summant/asp/internal/source"
 )
 
@@ -17,77 +19,135 @@ type Item struct {
 
 func (i Item) Named() bool { return i.Name != "" }
 
+// Opening is the first message, cleaned up for display.
+func (i Item) Opening() string { return cleanOpening(i.Session.Opening) }
+
 // Title is the custom name if set, else the opening message.
 func (i Item) Title() string {
 	if i.Name != "" {
 		return i.Name
 	}
-	if i.Session.Opening != "" {
-		return i.Session.Opening
+	if o := i.Opening(); o != "" {
+		return o
 	}
 	return "(no messages)"
 }
 
-// Haystack is what the fuzzy filter matches against: title, path and agent,
-// so "codex dotfiles" narrows by both at once.
+// Haystack is what the filter matches against: title, path and agent, so
+// "codex agent" narrows by both at once.
 func (i Item) Haystack() string {
 	return strings.ToLower(i.Title() + " " + i.Session.CWD + " " + i.Session.Agent.Label())
 }
 
-func (i Item) badge() string {
-	switch i.Session.Agent {
-	case source.Codex:
-		return BadgeCodex.Render("codex")
-	default:
-		return BadgeClaude.Render("claude")
-	}
-}
+// Item geometry within the list column (SPEC §3.3). The tag column is a
+// fixed 7 cells so every title starts in the same column whatever the agent.
+const (
+	gutterW  = 2                  // "│ " or "  "
+	markW    = 2                  // "● " or "○ "
+	tagW     = 7                  // "claude " / "codex  "
+	metaCol  = gutterW + markW    // metadata aligns under the tag
+	titleCol = metaCol + tagW + 1 // one space after the tag column
+)
 
-// Render draws the two-line entry. width is the usable inner width.
-func (i Item) Render(width int, selected bool) string {
-	dot := AutoDot.Render(DotHollow)
+type itemState int
+
+const (
+	plain itemState = iota
+	matched
+	selected
+)
+
+// renderItem draws the item's two lines, each exactly width cells.
+func (i Item) renderItem(width int, st itemState) [2]string {
+	gutter := "  "
+	title, meta := titleStyle, metaStyle
+	switch st {
+	case selected:
+		gutter = gutterSel.Render(gutterBar) + " "
+		title, meta = titleSel, metaSel
+	case matched:
+		gutter = gutterMatch.Render(gutterBar) + " "
+	}
+
+	mark := autoMark.Render(markAuto)
 	if i.Named() {
-		dot = NamedDot.Render(DotFilled)
+		mark = namedMark.Render(markNamed)
 	}
-	bar := "  "
-	titleStyle, metaStyle := ItemTitle, ItemMeta
-	if selected {
-		bar = Cursor.Render(CursorBar) + " "
-		titleStyle, metaStyle = ItemTitleSel, ItemMetaSel
+	tag := tagClaude
+	if i.Session.Agent == source.Codex {
+		tag = tagCodex
 	}
 
-	// Line 1: cursor, marker, badge, title (truncated to fit).
-	head := bar + dot + " " + i.badge() + " "
-	room := width - lipgloss.Width(head)
-	title := truncate(i.Title(), room)
+	line1 := gutter + mark + " " + tag.Render(padRight(i.Session.Agent.Label(), tagW)) + " " +
+		title.Render(truncate(i.Title(), width-titleCol))
 
-	// Line 2: path and metadata, indented under the title.
-	meta := fmt.Sprintf("%s  %s  %s msg  %s  %s",
-		collapseHome(i.Session.CWD), Sep, humanCount(i.Session.Messages), Sep, ago(i.Session.Modified))
-	meta = truncate(meta, width-4)
+	s := "  " + sep + "  "
+	tail := s + humanCount(i.Session.Messages) + " msg" + s + ago(i.Session.Modified)
+	room := width - metaCol - lipgloss.Width(tail)
+	var line2 string
+	if room >= 8 {
+		line2 = truncateLeft(collapseHome(i.Session.CWD), room) + tail
+	} else { // too narrow for the counts: keep the folder
+		line2 = truncateLeft(collapseHome(i.Session.CWD), width-metaCol)
+	}
+	line2 = gutter + strings.Repeat(" ", metaCol-gutterW) + meta.Render(line2)
 
-	return head + titleStyle.Render(title) + "\n" +
-		"    " + metaStyle.Render(meta)
+	return [2]string{padRight(line1, width), padRight(line2, width)}
 }
 
-// truncate cuts to a display width, not a byte or rune count, so wide
-// characters and ANSI-styled text line up correctly.
-func truncate(s string, max int) string {
-	if max <= 1 {
+// truncate cuts s to at most w display cells, ending in "…" if cut.
+func truncate(s string, w int) string {
+	if w <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= max {
+	if lipgloss.Width(s) <= w {
 		return s
 	}
-	r := []rune(s)
-	for len(r) > 0 && lipgloss.Width(string(r))+1 > max {
-		r = r[:len(r)-1]
+	return ansi.Truncate(s, w, ellipsis)
+}
+
+// truncateLeft keeps the end of s — for paths, where the leaf folder is the
+// identifying part.
+func truncateLeft(s string, w int) string {
+	if w <= 0 {
+		return ""
 	}
-	return string(r) + Ellipsis
+	n := lipgloss.Width(s)
+	if n <= w {
+		return s
+	}
+	if w == 1 {
+		return ellipsis
+	}
+	// Drop cells from the left until the rest fits beside the ellipsis. A
+	// wide character straddling the cut may not be removable by one cell,
+	// so widen the cut rather than repeating a call that cannot progress.
+	for drop := n - w + 1; drop <= n; drop++ {
+		if cut := ansi.TruncateLeft(s, drop, ""); lipgloss.Width(cut) <= w-1 {
+			return ellipsis + cut
+		}
+	}
+	return ellipsis
+}
+
+// padRight pads s with spaces to exactly w cells (truncating if longer).
+func padRight(s string, w int) string {
+	n := lipgloss.Width(s)
+	if n > w {
+		return ansi.Truncate(s, w, "")
+	}
+	return s + strings.Repeat(" ", w-n)
 }
 
 func collapseHome(p string) string {
-	if home, err := homeDir(); err == nil && strings.HasPrefix(p, home) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+"/") {
 		return "~" + strings.TrimPrefix(p, home)
 	}
 	return p
