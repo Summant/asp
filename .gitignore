@@ -1,0 +1,8 @@
+# built binary
+/asp
+
+# agent handoff / spec docs — local only, not part of the project history
+AGENTS.md
+CLAUDE.md
+SPEC.md
+HANDOFF.md
