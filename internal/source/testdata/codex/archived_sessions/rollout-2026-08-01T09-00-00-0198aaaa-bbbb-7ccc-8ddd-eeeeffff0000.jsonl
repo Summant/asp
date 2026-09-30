@@ -1,0 +1,2 @@
+{"type":"session_meta","payload":{"session_id":"0198aaaa-bbbb-7ccc-8ddd-eeeeffff0000","cwd":"/home/u/old"}}
+{"type":"response_item","payload":{"type":"message","role":"user","id":"msg_x","content":[{"type":"input_text","text":"archived prompt"}]}}

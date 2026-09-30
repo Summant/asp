@@ -1,0 +1,5 @@
+{"timestamp":"2026-09-30T00:05:44.045Z","type":"session_meta","payload":{"session_id":"01a0efa1-9c6d-7141-9237-f46909ef3743","id":"01a0efa1-9c6d-7141-9237-f46909ef3743","cwd":"/home/u/AgentSessionPicker","originator":"codex-tui","cli_version":"0.154.0"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","id":"msg_01a0efa1-a9fd-7b40-bfd8-341ef25231ae","content":[{"type":"input_text","text":"<permissions instructions>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","id":"msg_01a0efa1-a9fd-7b40-bfd8-3424672cf4a6","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/home/u/AgentSessionPicker</cwd>\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","id":"msg_01a0efa1-a9fd-7b40-bfd8-34308a4d9e52","content":[{"type":"input_text","text":"test"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","id":"msg_01a0efa1-a9fd-7b40-bfd8-35000000abcd","content":[{"type":"output_text","text":"ok"}]}}

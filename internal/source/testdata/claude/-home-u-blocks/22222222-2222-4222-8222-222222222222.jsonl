@@ -1,0 +1,2 @@
+{"type":"user","cwd":"/home/u/blocks","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":""}},{"type":"text","text":"What is in this screenshot?"}]}}
+{"type":"assistant","cwd":"/home/u/blocks","message":{"role":"assistant","content":[{"type":"text","text":"A terminal."}]}}
