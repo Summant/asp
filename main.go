@@ -141,13 +141,18 @@ func copyText(s string) error {
 
 func versionString() string {
 	if version != "" {
-		return version
+		return version // set by the Makefile
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, kv := range bi.Settings {
-			if kv.Key == "vcs.revision" && len(kv.Value) >= 7 {
-				return "dev-" + kv.Value[:7]
-			}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return v // go install github.com/summant/asp@v0.1.0
+	}
+	for _, kv := range bi.Settings {
+		if kv.Key == "vcs.revision" && len(kv.Value) >= 7 {
+			return "dev-" + kv.Value[:7]
 		}
 	}
 	return "dev"

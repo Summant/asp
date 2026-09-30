@@ -29,6 +29,22 @@ To run:
 ## Install
 
 ```sh
+go install github.com/summant/asp@latest
+```
+
+That puts `asp` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure
+that is on your `PATH`, or install straight into `~/.local/bin`:
+
+```sh
+GOBIN=~/.local/bin go install github.com/summant/asp@latest
+```
+
+Go fetches every library asp needs by itself. Update by running the same
+command again.
+
+From a clone:
+
+```sh
 make install   # builds and writes ~/.local/bin/asp — nothing else
 ```
 
