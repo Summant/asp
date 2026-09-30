@@ -78,9 +78,18 @@ func syncExec(run func() error, done func(error) tea.Msg) tea.Cmd {
 }
 
 // run feeds a command's message back into the model, as bubbletea would.
+// Timers (status fades, cursor blinks) are skipped: any command that does
+// not answer within 50ms is dropped.
 func run(m Model, cmd tea.Cmd) Model {
 	for cmd != nil {
-		msg := cmd()
+		ch := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { ch <- c() }(cmd)
+		var msg tea.Msg
+		select {
+		case msg = <-ch:
+		case <-time.After(50 * time.Millisecond):
+			return m
+		}
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, c := range batch {
 				m = run(m, c)
@@ -134,6 +143,9 @@ func newWorld(t *testing.T, items []Item) *world {
 
 func footer(m Model) string { return strings.TrimSpace(plainLines(m)[len(plainLines(m))-1]) }
 
+// status is the row above the footer where confirmations appear.
+func status(m Model) string { return strings.TrimSpace(plainLines(m)[len(plainLines(m))-2]) }
+
 func TestPauseAndGoBack(t *testing.T) {
 	w := newWorld(t, testItems())
 	w.host.steps = []jobs.State{jobs.Paused, jobs.Exited}
@@ -148,14 +160,14 @@ func TestPauseAndGoBack(t *testing.T) {
 		t.Fatalf("selected %q paused=%v after pausing", cur.Session.ID, cur.paused())
 	}
 	out := ansi.Strip(m.View())
-	if !strings.Contains(out, "1 paused") || !strings.Contains(out, "·  paused") || !strings.Contains(footer(m), "↵ goes back") {
+	if !strings.Contains(out, "1 paused") || !strings.Contains(out, "·  paused") || !strings.Contains(status(m), "↵ goes back") {
 		t.Errorf("paused session not shown:\n%s", out)
 	}
 
 	// Quitting with a paused session asks first.
 	m = pressRun(m, "q")
-	if !strings.Contains(footer(m), "1 paused session will end") {
-		t.Errorf("footer %q", footer(m))
+	if !strings.Contains(status(m), "1 paused session will end") {
+		t.Errorf("status %q", status(m))
 	}
 	m = pressRun(m, "j", "k") // any other key cancels the quit
 
@@ -163,8 +175,8 @@ func TestPauseAndGoBack(t *testing.T) {
 	if w.host.calls[1] != "resume "+it.Session.ID {
 		t.Errorf("enter on a paused session should continue it, calls %v", w.host.calls)
 	}
-	if strings.Contains(ansi.Strip(m.View()), "paused") || footer(m) != "session ended" {
-		t.Errorf("after exit footer %q", footer(m))
+	if strings.Contains(ansi.Strip(m.View()), "paused") || status(m) != "session ended" {
+		t.Errorf("after exit status %q", status(m))
 	}
 }
 
@@ -258,18 +270,18 @@ func TestPausedNewSessionShowsPlaceholderUntilSaved(t *testing.T) {
 
 func TestGroupsAndPrefixedFilter(t *testing.T) {
 	w := newWorld(t, testItems())
-	m := pressRun(w.model, "b")
+	m := pressRun(w.model, "g")
 	m = typeText(m, "arch")
 	m = pressRun(m, "enter")
-	if footer(m) != "added to #arch" {
-		t.Errorf("footer %q", footer(m))
+	if status(m) != "added to #arch" {
+		t.Errorf("status %q", status(m))
 	}
-	m = pressRun(m, "j", "j", "b")
+	m = pressRun(m, "j", "j", "g")
 	if len(m.sugg) != 1 || m.sugg[0] != "arch" {
 		t.Errorf("existing groups not suggested: %v", m.sugg)
 	}
 	m = pressRun(m, "down", "enter")
-	m = pressRun(m, "j", "b")
+	m = pressRun(m, "j", "g")
 	m = typeText(m, "waybar")
 	m = pressRun(m, "enter")
 
@@ -292,7 +304,7 @@ func TestGroupsAndPrefixedFilter(t *testing.T) {
 	m = pressRun(m, "esc")
 
 	// Remove from a group; the emptied group disappears.
-	m = pressRun(m, "g", "j", "j", "j", "B")
+	m = pressRun(m, "home", "j", "j", "j", "G")
 	if len(m.sugg) != 1 || m.sugg[0] != "waybar" {
 		t.Fatalf("remove suggestions %v", m.sugg)
 	}
@@ -474,8 +486,8 @@ func TestReadCopyHelp(t *testing.T) {
 	items[0].Session.Opening = "Read /x/[AGENTS.md](http://AGENTS.md) " + strings.Repeat("word ", 200) + "END"
 	w := newWorld(t, items)
 	m := pressRun(w.model, "y")
-	if w.copied != items[0].Session.Opening || footer(m) != "copied the opening message" {
-		t.Errorf("copied %q, footer %q", w.copied[:20], footer(m))
+	if w.copied != items[0].Session.Opening || status(m) != "copied the opening message" {
+		t.Errorf("copied %q, status %q", w.copied[:20], status(m))
 	}
 	m = pressRun(m, "v")
 	out := ansi.Strip(m.View())

@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -99,8 +100,9 @@ type Model struct {
 	input       textinput.Model
 	newName     string       // carried from the name prompt to the folder prompt
 	newAgent    source.Agent // agent a new session will use
-	status      string       // confirmation; cleared on the next keypress
+	status      string       // confirmation or error; fades after statusFor
 	statusBad   bool         // status is an error
+	statusID    int          // which status a pending fade is for
 	err         string       // prompt validation error; cleared on the next keypress
 	confirmQuit bool         // q pressed once with paused sessions
 
@@ -287,7 +289,33 @@ func (m *Model) resolve(j *jobs.Job) {
 	}
 }
 
+// statusFor is how long a status message stays up.
+const statusFor = 4 * time.Second
+
+// clearStatusMsg retires the status message it was scheduled for; a newer
+// message has a newer id and stays.
+type clearStatusMsg int
+
+// Update handles a message, then schedules any new status message to fade.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if id, ok := msg.(clearStatusMsg); ok {
+		if int(id) == m.statusID && !m.confirmQuit {
+			m.status, m.statusBad = "", false
+		}
+		return m, nil
+	}
+	before := m.status
+	next, cmd := m.update(msg)
+	nm := next.(Model)
+	if nm.status != "" && nm.status != before && !nm.confirmQuit {
+		nm.statusID++
+		id := nm.statusID
+		cmd = tea.Batch(cmd, tea.Tick(statusFor, func(time.Time) tea.Msg { return clearStatusMsg(id) }))
+	}
+	return nm, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -295,9 +323,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jobMsg:
 		return m.jobDone(msg)
 	case tea.KeyMsg:
-		m.status, m.statusBad, m.err = "", false, ""
+		m.err = ""
 		confirm := m.confirmQuit
-		m.confirmQuit = false
+		if confirm {
+			m.status, m.confirmQuit = "", false // answered, one way or the other
+		}
 		var cmd tea.Cmd
 		var next tea.Model
 		switch m.mode {
@@ -309,9 +339,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next, cmd = m.updateAgent(msg)
 		case modeFind:
 			next, cmd = m.updateFind(msg)
-		case modeRead:
-			next, cmd = m.updateRead(msg)
-		case modeHelp:
+		case modeRead, modeHelp:
 			next, cmd = m.updateRead(msg)
 		default:
 			next, cmd = m.updateList(msg, confirm)
@@ -376,9 +404,8 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 		}
 	case "unname":
 		if it, ok := m.current(); ok && it.Named() && !it.placeholder() {
-			m.setName("")
-			if m.status == "" {
-				m.status = "name cleared"
+			if m.setName("") {
+				m.say("name cleared")
 			}
 		}
 	case "folders":
@@ -391,7 +418,7 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	case "group_remove":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			if len(it.Groups) == 0 {
-				m.status = "not in any group"
+				m.say("not in any group")
 				break
 			}
 			m.mode = modeGroupRemove
@@ -439,7 +466,7 @@ func (m *Model) closeInput() {
 func (m Model) quit(confirmed bool) (tea.Model, tea.Cmd) {
 	if n := m.pausedCount(); n > 0 && !confirmed {
 		m.confirmQuit = true
-		m.status = fmt.Sprintf("%d paused session%s will end  %s  %s again to quit", n, plural(n), sep, m.keys.show("list", "quit"))
+		m.say(fmt.Sprintf("%d paused session%s will end  %s  %s again to quit", n, plural(n), sep, m.keys.show("list", "quit")))
 		return m, nil
 	}
 	m.saveState()
@@ -468,27 +495,32 @@ func (m *Model) saveState() {
 	_ = m.deps.Store.SaveState(st) // losing the view preference is not worth an error
 }
 
+// say shows a confirmation in the status row.
+func (m *Model) say(s string) { m.status, m.statusBad = s, false }
+
 func (m *Model) fail(format string, a ...any) {
 	m.status, m.statusBad = fmt.Sprintf(format, a...), true
 }
 
-func (m *Model) setName(name string) {
+// setName saves the selected session's name, reporting whether it worked.
+func (m *Model) setName(name string) bool {
 	i, ok := m.currentIndex()
 	if !ok {
-		return
+		return false
 	}
 	s := m.items[i].Session
 	if err := m.deps.Store.Set(string(s.Agent), s.ID, name); err != nil {
 		m.fail("could not save: %v", err)
-		return
+		return false
 	}
 	m.items[i].Name = name
+	return true
 }
 
 func (m *Model) copyOpening() {
 	it, ok := m.current()
 	if !ok || it.Session.Opening == "" {
-		m.status = "nothing to copy"
+		m.say("nothing to copy")
 		return
 	}
 	if m.deps.Copy == nil {
@@ -499,7 +531,7 @@ func (m *Model) copyOpening() {
 		m.fail("copy failed: %v", err)
 		return
 	}
-	m.status = "copied the opening message"
+	m.say("copied the opening message")
 }
 
 // open resumes the selected session: continues its paused process, or
@@ -565,11 +597,11 @@ func (m Model) jobDone(msg jobMsg) (tea.Model, tea.Cmd) {
 	case msg.err != nil:
 		m.fail("%s: %v", j.Agent, msg.err)
 	case j.State == jobs.Paused:
-		m.status = "paused  " + sep + "  " + m.keys.show("list", "open") + " goes back to it"
+		m.say("paused  " + sep + "  " + m.keys.show("list", "open") + " goes back to it")
 	case j.Name != "" && j.SessionID == "":
 		m.fail("no new %s session was saved, so the name %q was not kept", j.Agent, j.Name)
 	default:
-		m.status = "session ended"
+		m.say("session ended")
 	}
 	return m, nil
 }

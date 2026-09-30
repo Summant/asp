@@ -51,13 +51,13 @@ asp --config FILE    # use another config file
 | `n` | new session: choose the agent, name it, pick a folder |
 | `/` | filter; `f:folder` and `g:group` narrow to one field, `"quoted words"` keep spaces |
 | `f` | browse folders and show the sessions in the one you choose |
-| `b` / `B` | add to a group / remove from a group |
+| `g` / `G` | add to a group / remove from a group |
 | `r` / `x` | rename / clear the name |
 | `v` / `y` | everything about the session, full width / copy the opening message |
 | `←` `→` / `a` `d` | show all sessions, Claude only, or Codex only (remembered) |
 | `j` `k` / `↓` `↑` | move |
 | `h` `l` / `pgup` `pgdn` | previous / next page |
-| `g` `G` | first / last |
+| `home` `end` | first / last |
 | `?` | all keys, as configured |
 | `q` | quit — asks first if sessions are paused, since quitting ends them |
 
@@ -69,6 +69,9 @@ folder's contents or the start of a text file. `ctrl+o` opens it from the
 new-session folder prompt and from the filter. In the folder prompt itself,
 `↑` `↓` pick a suggestion and `tab` fills it in; with nothing typed, the
 folders you have used before are listed.
+
+Confirmations and errors appear on the line above the key hints and fade
+after a few seconds.
 
 Paused sessions are shown with `paused` in the list and a count in the
 header. Quitting asp ends them one at a time the way closing a terminal

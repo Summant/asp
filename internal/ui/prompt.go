@@ -164,11 +164,11 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeRename:
-		m.setName(val)
-		if m.status == "" {
-			m.status = "renamed"
+		if m.setName(val) {
 			if val == "" {
-				m.status = "name cleared"
+				m.say("name cleared")
+			} else {
+				m.say("renamed")
 			}
 		}
 		m.closeInput()
@@ -198,7 +198,7 @@ func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 			m.fail("could not save: %v", err)
 		} else {
 			m.reloadGroups()
-			m.status = "added to #" + val
+			m.say("added to #" + val)
 		}
 		m.closeInput()
 	case modeGroupRemove:
@@ -212,7 +212,7 @@ func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 			m.fail("could not save: %v", err)
 		} else {
 			m.reloadGroups()
-			m.status = "removed from #" + val
+			m.say("removed from #" + val)
 		}
 		m.closeInput()
 	}

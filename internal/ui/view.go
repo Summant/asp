@@ -85,7 +85,7 @@ func (m Model) View() string {
 			}
 		}
 	}
-	rows = append(rows, "", pad+m.footer(inner))
+	rows = append(rows, pad+m.statusLine(inner), pad+m.footer(inner))
 
 	// A terminal shorter than the chrome gets the top of the screen; no
 	// line may ever exceed the width, whatever went into it.
@@ -407,12 +407,6 @@ func (m Model) footer(w int) string {
 		return hint(k.pair("details", "up", "down"), "scroll", k.show("details", "back"), "back")
 	}
 
-	if m.status != "" {
-		if m.statusBad {
-			return errStyle.Render(truncate(m.status, w))
-		}
-		return statusStyle.Render(truncate(m.status, w))
-	}
 	if len(m.items) == 0 {
 		return ""
 	}
@@ -443,6 +437,18 @@ func (m Model) footer(w int) string {
 		out += next
 	}
 	return out
+}
+
+// statusLine is the row above the footer: the latest confirmation or
+// error, which fades on its own and never hides the keys.
+func (m Model) statusLine(w int) string {
+	switch {
+	case m.status == "":
+		return ""
+	case m.statusBad:
+		return errStyle.Render(truncate(m.status, w))
+	}
+	return statusStyle.Render(truncate(m.status, w))
 }
 
 // spread puts left and right at the two ends of a w-cell line, dropping

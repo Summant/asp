@@ -75,6 +75,10 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -281,19 +285,36 @@ func TestRenameAndStatusClears(t *testing.T) {
 	if n, _ := st.Get("claude", testItems()[0].Session.ID); n != "Fresh name" {
 		t.Errorf("stored %q", n)
 	}
-	if f := plainLines(m)[29]; strings.TrimSpace(f) != "renamed" {
-		t.Errorf("footer %q", f)
+	// The confirmation sits above the footer; the keys stay visible.
+	if l := plainLines(m)[28]; strings.TrimSpace(l) != "renamed" {
+		t.Errorf("status row %q", l)
 	}
-	m = press(m, "j")
-	if f := plainLines(m)[29]; !strings.Contains(f, "open") {
-		t.Errorf("status did not clear on next key: %q", f)
+	if f := plainLines(m)[29]; !strings.Contains(f, "↵ open") {
+		t.Errorf("keys hidden by the status: %q", f)
+	}
+	renamedID := m.statusID
+	m = press(m, "j") // moving does not dismiss it…
+	if l := plainLines(m)[28]; strings.TrimSpace(l) != "renamed" {
+		t.Errorf("status vanished on a keypress: %q", l)
 	}
 	m = press(m, "k", "x")
 	if n, ok := st.Get("claude", testItems()[0].Session.ID); ok {
 		t.Errorf("x left name %q", n)
 	}
-	if f := plainLines(m)[29]; strings.TrimSpace(f) != "name cleared" {
-		t.Errorf("footer %q", f)
+	if l := plainLines(m)[28]; strings.TrimSpace(l) != "name cleared" {
+		t.Errorf("status row %q", l)
+	}
+	// …the fade scheduled for "renamed" must not clear the newer message…
+	next, _ := m.Update(clearStatusMsg(renamedID))
+	m = next.(Model)
+	if l := plainLines(m)[28]; strings.TrimSpace(l) != "name cleared" {
+		t.Errorf("an old fade cleared a newer status: %q", l)
+	}
+	// …but its own fade does.
+	next, _ = m.Update(clearStatusMsg(m.statusID))
+	m = next.(Model)
+	if l := plainLines(m)[28]; strings.TrimSpace(l) != "" {
+		t.Errorf("status did not fade: %q", l)
 	}
 	m = press(m, "r")
 	if m.input.Value() != "" {
