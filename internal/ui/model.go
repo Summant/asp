@@ -20,6 +20,7 @@ type Host interface {
 	NewJob(agent source.Agent, dir, resumeID, name string) *jobs.Job
 	Start(*jobs.Job) error  // blocks until the agent pauses or exits
 	Resume(*jobs.Job) error // likewise
+	End(*jobs.Job) error    // finish a paused one
 	Paused() []*jobs.Job
 }
 
@@ -38,39 +39,65 @@ type Deps struct {
 	Keys map[string]map[string][]string
 }
 
-// agentView is which agents' sessions are listed. It is remembered between
-// runs.
-type agentView int
-
+// Tabs: all, claude and codex are fixed; up to maxGroupTabs more show
+// one group each. The open tabs and the current one are remembered.
 const (
-	viewAll agentView = iota
+	viewAll = iota
 	viewClaude
 	viewCodex
-	numViews
+	fixedTabs
 )
 
-func (v agentView) String() string {
-	return [...]string{"all", "claude", "codex"}[v]
-}
+const maxGroupTabs = 5
 
-func parseView(s string) agentView {
-	for v := range numViews {
-		if v.String() == s {
-			return v
-		}
-	}
-	return viewAll
-}
-
-// shows reports whether sessions of agent a are listed in this view.
-func (v agentView) shows(a source.Agent) bool {
+// tabLabel is how tab v is shown: "all", "claude", "codex" or the group's
+// name as it is.
+func (m Model) tabLabel(v int) string {
 	switch v {
+	case viewAll:
+		return "all"
 	case viewClaude:
-		return a == source.Claude
+		return "claude"
 	case viewCodex:
-		return a == source.Codex
+		return "codex"
 	}
-	return true
+	return m.groupTabs[v-fixedTabs]
+}
+
+// tabKey is how tab v is saved; group tabs are prefixed so a group called
+// "claude" cannot be mistaken for the claude tab.
+func (m Model) tabKey(v int) string {
+	if v >= fixedTabs {
+		return "group:" + m.groupTabs[v-fixedTabs]
+	}
+	return m.tabLabel(v)
+}
+
+func (m Model) tabCount() int { return fixedTabs + len(m.groupTabs) }
+
+// tabGroup is the group the current tab shows, if it is a group tab.
+func (m Model) tabGroup() (string, bool) {
+	if m.view >= fixedTabs && m.view-fixedTabs < len(m.groupTabs) {
+		return m.groupTabs[m.view-fixedTabs], true
+	}
+	return "", false
+}
+
+// shows reports whether the current tab lists it.
+func (m Model) shows(it Item) bool {
+	switch m.view {
+	case viewAll:
+		return true
+	case viewClaude:
+		return it.Session.Agent == source.Claude
+	case viewCodex:
+		return it.Session.Agent == source.Codex
+	}
+	g, _ := m.tabGroup()
+	if it.placeholder() && it.Job != nil {
+		return it.Job.Group == g // a new session started from this tab
+	}
+	return slices.Contains(it.Groups, g)
 }
 
 type mode int
@@ -84,22 +111,25 @@ const (
 	modeNewDir
 	modeGroupAdd
 	modeGroupRemove
+	modeTabAdd
 	modeFind
 	modeRead
 	modeHelp
 )
 
 type Model struct {
-	items  []Item
-	order  []int // indices into items: in the current view and matching query
-	cursor int   // index into order; the page is derived from it
-	view   agentView
-	query  string // active filter, live while typing
+	items     []Item
+	order     []int    // indices into items: in the current view and matching query
+	cursor    int      // index into order; the page is derived from it
+	view      int      // current tab: viewAll, viewClaude, viewCodex, or a group tab
+	groupTabs []string // group names shown as tabs, in order
+	query     string   // active filter, live while typing
 
 	mode        mode
 	input       textinput.Model
 	newName     string       // carried from the name prompt to the folder prompt
 	newAgent    source.Agent // agent a new session will use
+	newGroup    string       // group a new session joins: the tab it was started from
 	status      string       // confirmation or error; fades after statusFor
 	statusBad   bool         // status is an error
 	statusID    int          // which status a pending fade is for
@@ -139,7 +169,17 @@ func New(items []Item, d Deps) Model {
 	ti.TextStyle = fg(text)
 
 	saved := d.Store.State()
-	m := Model{items: items, deps: d, keys: newKeymap(d.Keys), input: ti, view: parseView(saved.View), suggSel: -1}
+	m := Model{items: items, deps: d, keys: newKeymap(d.Keys), input: ti, suggSel: -1}
+	for _, g := range saved.Tabs {
+		if g != "" && !slices.Contains(m.groupTabs, g) && len(m.groupTabs) < maxGroupTabs {
+			m.groupTabs = append(m.groupTabs, g)
+		}
+	}
+	for v := range m.tabCount() {
+		if m.tabKey(v) == saved.View {
+			m.view = v // reopen on the tab asp was closed on
+		}
+	}
 	m.attachJobs()
 	m.reorder()
 	m.selectKey(saved.Last)
@@ -168,7 +208,7 @@ func (m *Model) reorder() {
 	type hit struct{ idx, score int }
 	var hits []hit
 	for i, it := range m.items {
-		if !m.view.shows(it.Session.Agent) {
+		if !m.shows(it) {
 			continue
 		}
 		if s, ok := matchItem(it, q); ok {
@@ -287,6 +327,11 @@ func (m *Model) resolve(j *jobs.Job) {
 			found.Name = j.Name
 		}
 	}
+	if j.Group != "" {
+		if err := m.deps.Store.AddToGroup(string(j.Agent), j.SessionID, j.Group); err == nil && !slices.Contains(found.Groups, j.Group) {
+			found.Groups = append(found.Groups, j.Group)
+		}
+	}
 }
 
 // statusFor is how long a status message stays up.
@@ -333,7 +378,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeFilter:
 			next, cmd = m.updateFilter(msg)
-		case modeRename, modeNewName, modeNewDir, modeGroupAdd, modeGroupRemove:
+		case modeRename, modeNewName, modeNewDir, modeGroupAdd, modeGroupRemove, modeTabAdd:
 			next, cmd = m.updatePrompt(msg)
 		case modeNewAgent:
 			next, cmd = m.updateAgent(msg)
@@ -359,13 +404,11 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	switch m.keys.action("list", msg) {
 	case "quit":
 		return m.quit(confirm)
-	case "back":
+	case "back": // clears a filter; never quits (q and ctrl+c do)
 		if m.query != "" {
 			m.query = ""
 			m.reorder()
-			return m, nil
 		}
-		return m.quit(confirm)
 	case "down":
 		m.move(1)
 	case "up":
@@ -381,9 +424,27 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 	case "last":
 		m.cursor = max(0, len(m.order)-1)
 	case "view_next":
-		m.setView((m.view + 1) % numViews)
+		m.setView((m.view + 1) % m.tabCount())
 	case "view_prev":
-		m.setView((m.view + numViews - 1) % numViews)
+		m.setView((m.view + m.tabCount() - 1) % m.tabCount())
+	case "tab_add":
+		if len(m.groupTabs) >= maxGroupTabs {
+			m.fail("%d group tabs at most; close one with %s first", maxGroupTabs, m.keys.show("list", "tab_close"))
+			break
+		}
+		m.mode = modeTabAdd
+		m.openInput("")
+	case "tab_close":
+		g, ok := m.tabGroup()
+		if !ok {
+			m.say("only group tabs can be closed")
+			break
+		}
+		m.groupTabs = slices.Delete(m.groupTabs, m.view-fixedTabs, m.view-fixedTabs+1)
+		m.setView(min(m.view, m.tabCount()-1))
+		m.say("closed the " + g + " tab")
+	case "end":
+		return m.end()
 	case "filter":
 		m.mode = modeFilter
 		m.query = ""
@@ -396,6 +457,7 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 		if m.view == viewCodex {
 			m.newAgent = source.Codex
 		}
+		m.newGroup, _ = m.tabGroup() // a new session from a group tab joins that group
 		m.mode = modeNewAgent
 	case "rename":
 		if it, ok := m.current(); ok && !it.placeholder() {
@@ -442,7 +504,7 @@ func (m *Model) move(d int) {
 	}
 }
 
-func (m *Model) setView(v agentView) {
+func (m *Model) setView(v int) {
 	m.view = v
 	m.reorder()
 	m.saveState()
@@ -488,7 +550,7 @@ func plural(n int) string {
 }
 
 func (m *Model) saveState() {
-	st := store.State{View: m.view.String()}
+	st := store.State{View: m.tabKey(m.view), Tabs: m.groupTabs}
 	if it, ok := m.current(); ok && !it.placeholder() {
 		st.Last = it.Key()
 	}
@@ -558,6 +620,18 @@ func (m Model) open() (tea.Model, tea.Cmd) {
 	return m, m.deps.Exec(func() error { return m.deps.Host.Start(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
 }
 
+// end finishes the selected paused session without going into it. The
+// agent gets the terminal for its goodbye, so the UI steps aside for it.
+func (m Model) end() (tea.Model, tea.Cmd) {
+	it, ok := m.current()
+	if !ok || !it.paused() {
+		m.say("only a paused session can be ended here")
+		return m, nil
+	}
+	j := it.Job
+	return m, m.deps.Exec(func() error { return m.deps.Host.End(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
+}
+
 // startNew launches a new session in dir, remembering which of the agent's
 // sessions already existed so the new one can be found and named.
 func (m Model) startNew(dir string) (tea.Model, tea.Cmd) {
@@ -575,6 +649,7 @@ func (m Model) startNew(dir string) (tea.Model, tea.Cmd) {
 	}
 	j := m.deps.Host.NewJob(m.newAgent, dir, "", m.newName)
 	j.Before = before
+	j.Group = m.newGroup
 	return m, m.deps.Exec(func() error { return m.deps.Host.Start(j) }, func(err error) tea.Msg { return jobMsg{j, err} })
 }
 

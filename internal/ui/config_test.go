@@ -35,7 +35,7 @@ parent = ["ctrl+h"]
 		t.Error("q still acts after being unbound")
 	}
 	f := footer(m)
-	for _, want := range []string{"i details", "Q quit", "shift+tab/tab view"} {
+	for _, want := range []string{"Q quit", "shift+tab/tab tabs", "? keys"} {
 		if !strings.Contains(f, want) {
 			t.Errorf("footer %q lacks %q", f, want)
 		}
@@ -45,7 +45,7 @@ parent = ["ctrl+h"]
 		t.Errorf("tab did not switch view: %v", m.view)
 	}
 	m = pressRun(m, "i")
-	if m.mode != modeRead {
+	if m.mode != modeRead { // bound, even when the footer has no room to show it
 		t.Errorf("i did not open details: %v", m.mode)
 	}
 	m = pressRun(m, "esc", "/")

@@ -105,22 +105,27 @@ func (m Model) header() string {
 	if len(m.items) == 0 {
 		return logo
 	}
-	counts := map[source.Agent]int{}
-	for _, it := range m.items {
-		counts[it.Session.Agent]++
-	}
-	seg := func(v agentView, n int) string {
-		s := fmt.Sprintf("%s %d", v, n)
-		if v == m.view {
-			return viewOnStyle.Render(s)
-		}
-		return summaryStyle.Render(s)
-	}
 	dotSep := summaryStyle.Render("  " + sep + "  ")
-	out := logo + "  " + seg(viewAll, len(m.items)) + dotSep +
-		seg(viewClaude, counts[source.Claude]) + dotSep + seg(viewCodex, counts[source.Codex])
+	out := logo + " "
+	for v := range m.tabCount() {
+		label := fmt.Sprintf("%s %d", m.tabLabel(v), m.tabSize(v))
+		if v == m.view {
+			label = viewOnStyle.Render(label)
+		} else {
+			label = summaryStyle.Render(label)
+		}
+		if v > 0 {
+			out += dotSep
+		} else {
+			out += " "
+		}
+		out += label
+	}
+	if len(m.groupTabs) < maxGroupTabs {
+		out += dotSep + summaryStyle.Render(m.keys.show("list", "tab_add"))
+	}
 	if n := m.pausedCount(); n > 0 {
-		out += dotSep + statusStyle.Render(fmt.Sprintf("%d paused", n))
+		out += "    " + statusStyle.Render(fmt.Sprintf("%d paused", n))
 	}
 	if m.query != "" && m.mode != modeFilter {
 		out += dotSep + statusStyle.Render("filter: "+m.query) + helpDesc.Render("  esc clears")
@@ -142,7 +147,11 @@ func (m Model) listRows(w, n int) []string {
 	case len(m.order) == 0 && m.query != "":
 		rows = append(rows, metaStyle.Render(truncate(fmt.Sprintf("no sessions match %q", m.query), w)))
 	case len(m.order) == 0:
-		rows = append(rows, metaStyle.Render(fmt.Sprintf("no %s sessions", m.view)))
+		if g, ok := m.tabGroup(); ok {
+			rows = append(rows, metaStyle.Render(truncate(fmt.Sprintf("no sessions in %s yet  %s  %s in another tab adds one", g, sep, m.keys.show("list", "group_add")), w)))
+		} else {
+			rows = append(rows, metaStyle.Render(fmt.Sprintf("no %s sessions", m.tabLabel(m.view))))
+		}
 	default:
 		per := m.perPage()
 		start := m.cursor / per * per
@@ -240,7 +249,7 @@ func (m Model) detailRows(w int) []string {
 		kv("id", id),
 	}
 	if len(it.Groups) > 0 {
-		rows = append(rows, kv("groups", truncate("#"+strings.Join(it.Groups, " #"), valW)))
+		rows = append(rows, detailKey.Render(padRight("groups", detailKeyW))+groupTag.Render(truncate("#"+strings.Join(it.Groups, " #"), valW)))
 	}
 	if it.paused() {
 		rows = append(rows, detailKey.Render(padRight("status", detailKeyW))+statusStyle.Render("paused · "+m.keys.show("list", "open")+" to go back"))
@@ -298,7 +307,13 @@ func (m Model) readLines() []string {
 	rows = append(rows, kv("name", name)...)
 	rows = append(rows, kv("id", id)...)
 	if len(it.Groups) > 0 {
-		rows = append(rows, kv("groups", "#"+strings.Join(it.Groups, " #"))...)
+		for i, l := range wrap("#"+strings.Join(it.Groups, " #"), max(1, w-detailKeyW), 1<<30) {
+			key := ""
+			if i == 0 {
+				key = "groups"
+			}
+			rows = append(rows, detailKey.Render(padRight(key, detailKeyW))+groupTag.Render(l))
+		}
 	}
 	if it.paused() {
 		rows = append(rows, kv("status", "paused · "+m.keys.show("list", "open")+" to go back")...)
@@ -389,6 +404,8 @@ func (m Model) footer(w int) string {
 		return m.promptLine(w, promptLabel.Render("add to group  "), hint(pick, "pick", k.show("prompt", "confirm"), "add", k.show("prompt", "cancel"), "cancel"))
 	case modeGroupRemove:
 		return m.promptLine(w, promptLabel.Render("remove from group  "), hint(pick, "pick", k.show("prompt", "confirm"), "remove", k.show("prompt", "cancel"), "cancel"))
+	case modeTabAdd:
+		return m.promptLine(w, promptLabel.Render("new tab for group  "), hint(pick, "pick", k.show("prompt", "confirm"), "add", k.show("prompt", "cancel"), "cancel"))
 	case modeFind:
 		r, _ := m.findSelected()
 		var keys string
@@ -412,31 +429,51 @@ func (m Model) footer(w int) string {
 	}
 	entries := [][2]string{
 		{k.show("list", "open"), "open"},
+	}
+	if it, ok := m.current(); ok && it.paused() {
+		entries = append(entries, [2]string{k.show("list", "end"), "end"})
+	}
+	entries = append(entries, [][2]string{
 		{k.show("list", "new"), "new"},
 		{k.show("list", "filter"), "filter"},
 		{k.show("list", "folders"), "folders"},
 		{k.show("list", "group_add"), "group"},
+		{k.pair("list", "view_prev", "view_next"), "tabs"},
+		{k.show("list", "tab_add"), "tab"},
 		{k.show("list", "rename"), "rename"},
 		{k.show("list", "details"), "details"},
-		{k.pair("list", "view_prev", "view_next"), "view"},
-		{k.show("list", "help"), "keys"},
-		{k.show("list", "quit"), "quit"},
+	}...)
+	// "keys" and "quit" always show; the others fill what room is left.
+	tail := [][2]string{{k.show("list", "help"), "keys"}, {k.show("list", "quit"), "quit"}}
+	render := func(e [2]string) string { return helpKey.Render(e[0]) + " " + helpDesc.Render(e[1]) }
+	gap := "   "
+	var tailW int
+	var tailParts []string
+	for _, e := range tail {
+		if e[0] != "" {
+			tailParts = append(tailParts, render(e))
+		}
 	}
+	tailStr := strings.Join(tailParts, gap)
+	tailW = lipgloss.Width(tailStr)
 	var out string
 	for _, e := range entries {
 		if e[0] == "" {
 			continue // unbound
 		}
-		next := helpKey.Render(e[0]) + " " + helpDesc.Render(e[1])
+		next := render(e)
 		if out != "" {
-			next = "   " + next
+			next = gap + next
 		}
-		if lipgloss.Width(out+next) > w {
+		if lipgloss.Width(out+next)+len(gap)+tailW > w {
 			break // drop what does not fit rather than wrap
 		}
 		out += next
 	}
-	return out
+	if out == "" {
+		return truncate(tailStr, w)
+	}
+	return truncate(out+gap+tailStr, w)
 }
 
 // statusLine is the row above the footer: the latest confirmation or
@@ -479,10 +516,17 @@ func (m Model) promptLine(w int, label, right string) string {
 	return left + strings.Repeat(" ", fill) + right
 }
 
+// tabSize counts the sessions tab v lists.
+func (m Model) tabSize(v int) int {
+	cur := m
+	cur.view = v
+	return cur.viewTotal()
+}
+
 func (m Model) viewTotal() int {
 	n := 0
 	for _, it := range m.items {
-		if m.view.shows(it.Session.Agent) {
+		if m.shows(it) {
 			n++
 		}
 	}

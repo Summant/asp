@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -102,14 +103,14 @@ func TestState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.State(); got != (State{}) {
+	if got := s.State(); !reflect.DeepEqual(got, State{}) {
 		t.Errorf("fresh state = %+v", got)
 	}
-	want := State{View: "codex", Last: "codex:abc"}
+	want := State{View: "group:arch", Tabs: []string{"arch", "wm"}, Last: "codex:abc"}
 	if err := s.SaveState(want); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.State(); got != want {
+	if got := s.State(); !reflect.DeepEqual(got, want) {
 		t.Errorf("state = %+v, want %+v", got, want)
 	}
 }

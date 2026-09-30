@@ -27,6 +27,7 @@ type Job struct {
 	Dir       string
 	ResumeID  string
 	Name      string
+	Group     string
 	Before    map[string]bool
 	Started   time.Time
 	SessionID string
@@ -48,5 +49,6 @@ func (h *Host) NewJob(agent source.Agent, dir, resumeID, name string) *Job {
 }
 func (h *Host) Start(*Job) error  { return errUnsupported }
 func (h *Host) Resume(*Job) error { return errUnsupported }
+func (h *Host) End(*Job) error    { return errUnsupported }
 func (h *Host) Paused() []*Job    { return nil }
 func (h *Host) Close()            {}

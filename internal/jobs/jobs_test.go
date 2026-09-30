@@ -133,7 +133,9 @@ func TestHost(t *testing.T) {
 	expect("got-interrupt")
 	expect("STEP interrupted 7")
 	expect("slow-started")
-	expect("got-hup") // quitting waited for the agent to finish
+	expect("got-hup") // End waited for the first agent to finish
+	expect("STEP ended one")
+	expect("got-hup") // quitting waited for the other
 	expect("STEP closed")
 	expect("HELPER OK")
 	if err := cmd.Wait(); err != nil {
@@ -205,10 +207,19 @@ func TestHelperHost(t *testing.T) {
 	}
 	fmt.Println("STEP interrupted", k.ExitCode)
 
+	// End one paused job on its own, then the rest on Close.
+	one := h.NewJob(source.Codex, work, "", "")
+	if err := h.Start(one); err != nil || one.State != Paused {
+		fail("one start: %v %v", err, one.State)
+	}
 	slow := h.NewJob(source.Codex, work, "", "")
 	if err := h.Start(slow); err != nil || slow.State != Paused {
 		fail("slow start: %v %v", err, slow.State)
 	}
+	if err := h.End(one); err != nil || one.State != Exited || len(h.Paused()) != 1 || !foreground() {
+		fail("end one: %v, state %v, %d paused, foreground %v", err, one.State, len(h.Paused()), foreground())
+	}
+	fmt.Println("STEP ended one")
 	h.Close()
 	if len(h.Paused()) != 0 || slow.State != Exited || !foreground() {
 		fail("after close: %d paused, state %v, foreground %v", len(h.Paused()), slow.State, foreground())

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -201,6 +202,18 @@ func (m Model) submit(val string) (tea.Model, tea.Cmd) {
 			m.say("added to #" + val)
 		}
 		m.closeInput()
+	case modeTabAdd:
+		val = strings.TrimPrefix(val, "#")
+		switch {
+		case val == "":
+		case slices.Contains(m.groupTabs, val):
+			m.setView(fixedTabs + slices.Index(m.groupTabs, val))
+		default:
+			m.groupTabs = append(m.groupTabs, val)
+			m.setView(m.tabCount() - 1)
+			m.say("added a tab for " + val)
+		}
+		m.closeInput()
 	case modeGroupRemove:
 		it, ok := m.current()
 		if !ok || val == "" {
@@ -248,6 +261,14 @@ func (m *Model) updateSuggestions() {
 		if it, ok := m.current(); ok {
 			m.sugg = rank(it.Groups, strings.TrimPrefix(v, "#"), maxSugg)
 		}
+	case modeTabAdd:
+		var open []string // groups without a tab yet
+		for _, g := range m.deps.Store.GroupNames() {
+			if !slices.Contains(m.groupTabs, g) {
+				open = append(open, g)
+			}
+		}
+		m.sugg = rank(open, v, maxSugg)
 	default:
 		m.sugg = nil
 	}
@@ -328,7 +349,7 @@ func (m Model) promptTitle() string {
 			return "recent folders"
 		}
 		return "folders"
-	case modeGroupAdd:
+	case modeGroupAdd, modeTabAdd:
 		return "groups"
 	case modeGroupRemove:
 		return "remove from"

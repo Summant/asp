@@ -13,6 +13,7 @@ import (
 var (
 	accent, accentMuted, secondary, text, textStrong lipgloss.Color
 	muted, subtle, rule, dotActive, errColour        lipgloss.Color
+	groupColour                                      lipgloss.Color
 
 	// Chrome. The logo is the only bold text and the only background.
 	logoStyle, summaryStyle, viewOnStyle, ruleStyle lipgloss.Style
@@ -20,7 +21,7 @@ var (
 	// List items.
 	gutterSel, gutterMatch, titleStyle, titleSel lipgloss.Style
 	metaStyle, metaSel, namedMark, autoMark      lipgloss.Style
-	tagClaude, tagCodex                          lipgloss.Style
+	tagClaude, tagCodex, groupTag                lipgloss.Style
 
 	// Pagination.
 	dotOn, dotOff lipgloss.Style
@@ -49,6 +50,7 @@ func ApplyTheme(c map[string]string) {
 	rule = lipgloss.Color(c["rule"])
 	dotActive = lipgloss.Color(c["dot_active"])
 	errColour = lipgloss.Color(c["error"])
+	groupColour = lipgloss.Color(c["group"])
 
 	logoStyle = lipgloss.NewStyle().Foreground(textStrong).Background(accent).Bold(true).Padding(0, 1)
 	summaryStyle = fg(subtle)
@@ -65,6 +67,7 @@ func ApplyTheme(c map[string]string) {
 	autoMark = fg(muted)
 	tagClaude = fg(accent)
 	tagCodex = fg(secondary)
+	groupTag = fg(groupColour)
 
 	dotOn = fg(dotActive)
 	dotOff = fg(rule)

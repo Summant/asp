@@ -62,6 +62,17 @@ func (h *fakeHost) Resume(j *jobs.Job) error {
 	return nil
 }
 
+func (h *fakeHost) End(j *jobs.Job) error {
+	h.calls = append(h.calls, "end "+j.ResumeID)
+	j.State = jobs.Exited
+	for i, x := range h.jobs {
+		if x == j {
+			h.jobs = append(h.jobs[:i], h.jobs[i+1:]...)
+		}
+	}
+	return nil
+}
+
 func (h *fakeHost) Paused() []*jobs.Job {
 	var out []*jobs.Job
 	for _, j := range h.jobs {

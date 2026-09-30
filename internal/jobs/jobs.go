@@ -40,6 +40,7 @@ type Job struct {
 	Dir      string
 	ResumeID string          // session to resume; empty starts a new one
 	Name     string          // name to give a new session once it exists
+	Group    string          // group to put a new session in once it exists
 	Before   map[string]bool // the agent's session ids before a new start
 	Started  time.Time
 
@@ -237,7 +238,7 @@ func (h *Host) Paused() []*Job {
 func (h *Host) Close() {
 	paused := h.Paused()
 	for _, j := range paused {
-		h.end(j)
+		_ = h.End(j)
 	}
 	if len(paused) > 0 && h.Out != nil {
 		// Undo modes a killed agent may have left on: cursor hidden,
@@ -251,7 +252,13 @@ func (h *Host) Close() {
 
 const endTimeout = 10 * time.Second
 
-func (h *Host) end(j *Job) {
+// End finishes one paused job as Close does — in the foreground, so the
+// agent can clean up and write its goodbye — and takes the terminal back.
+// The caller must have released the terminal (asp's UI is not drawing).
+func (h *Host) End(j *Job) error {
+	if j.State != Paused {
+		return errors.New("session is not paused")
+	}
 	_ = unix.IoctlSetPointerInt(h.TTY, unix.TIOCSPGRP, j.pid)
 	_ = syscall.Kill(-j.pid, syscall.SIGHUP) // pending, delivered on continue
 	_ = syscall.Kill(-j.pid, syscall.SIGCONT)
@@ -278,4 +285,5 @@ func (h *Host) end(j *Job) {
 	j.State = Exited
 	h.drop(j)
 	h.reclaim()
+	return nil
 }

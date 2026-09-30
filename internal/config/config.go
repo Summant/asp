@@ -36,6 +36,7 @@ var Colors = []Color{
 	{"rule", "#2e2a3d", "the line between list and details, inactive page dot"},
 	{"dot_active", "#9aa4b1", "active page dot"},
 	{"error", "#ff5555", "error messages"},
+	{"group", "#ff7ac6", "#group tags on sessions and in the details"},
 }
 
 // Binding is one action and its default keys.
@@ -64,8 +65,11 @@ var Sections = []Section{
 		{"unname", []string{"x"}, "clear the name"},
 		{"details", []string{"v"}, "everything about the session, full width"},
 		{"copy", []string{"y"}, "copy the opening message"},
-		{"view_next", []string{"right", "d"}, "next view: all → claude → codex"},
-		{"view_prev", []string{"left", "a"}, "previous view"},
+		{"view_next", []string{"right", "d"}, "next tab: all → claude → codex → your group tabs"},
+		{"view_prev", []string{"left", "a"}, "previous tab"},
+		{"tab_add", []string{"+"}, "add a group as a tab (up to 5)"},
+		{"tab_close", []string{"-"}, "close the current group tab"},
+		{"end", []string{"c"}, "end the selected paused session (it can be resumed later)"},
 		{"down", []string{"j", "down"}, "move down"},
 		{"up", []string{"k", "up"}, "move up"},
 		{"next_page", []string{"l", "pgdown"}, "next page"},
@@ -73,8 +77,8 @@ var Sections = []Section{
 		{"first", []string{"home"}, "first session"},
 		{"last", []string{"end"}, "last session"},
 		{"help", []string{"?"}, "list all keys"},
-		{"back", []string{"esc"}, "clear the filter, or quit if there is none"},
-		{"quit", []string{"q"}, "quit (asks first if sessions are paused)"},
+		{"back", []string{"esc"}, "clear the filter (never quits)"},
+		{"quit", []string{"q"}, "quit (asks first if sessions are paused); ctrl+c also quits"},
 	}},
 	{"prompt", "text prompts: filter, rename, new-session name and folder, groups", []Binding{
 		{"confirm", []string{"enter"}, "accept"},

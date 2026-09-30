@@ -77,6 +77,8 @@ func keyMsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "home":
 		return tea.KeyMsg{Type: tea.KeyHome}
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "end":
 		return tea.KeyMsg{Type: tea.KeyEnd}
 	}

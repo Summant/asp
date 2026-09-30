@@ -107,14 +107,10 @@ func (i Item) renderItem(width int, st itemState) [2]string {
 	if i.placeholder() {
 		count = "new"
 	}
-	tail := s + count + s + ago(i.Session.Modified)
-	for n, g := range i.Groups {
-		if n == 0 {
-			tail += s
-		} else {
-			tail += " "
-		}
-		tail += "#" + g
+	mid := s + count + s + ago(i.Session.Modified)
+	groups := ""
+	if len(i.Groups) > 0 {
+		groups = "#" + strings.Join(i.Groups, " #")
 	}
 	flag := ""
 	if i.paused() {
@@ -122,17 +118,31 @@ func (i Item) renderItem(width int, st itemState) [2]string {
 	}
 	path := collapseHome(i.Session.CWD)
 	avail := width - metaCol
-	var body string
-	if room := avail - lipgloss.Width(tail+flag); room >= 8 {
-		body = truncateLeft(path, room) + tail
-	} else { // narrow: keep the leaf folder, cut the rest
-		body = truncate(truncateLeft(path, 12)+tail, max(0, avail-lipgloss.Width(flag)))
-		flag = truncate(flag, avail-lipgloss.Width(body))
+	room := func() int {
+		n := avail - lipgloss.Width(mid+flag)
+		if groups != "" {
+			n -= lipgloss.Width(s + groups)
+		}
+		return n
 	}
-	line2 := gutter + strings.Repeat(" ", metaCol-gutterW) + meta.Render(body)
+	if room() < 8 { // too narrow for the group tags: they are in the details
+		groups = ""
+	}
+	var line2 string
+	if r := room(); r >= 8 {
+		line2 = meta.Render(truncateLeft(path, r) + mid)
+		if groups != "" {
+			line2 += meta.Render(s) + groupTag.Render(groups)
+		}
+	} else { // narrow: keep the leaf folder, cut the rest
+		body := truncate(truncateLeft(path, 12)+mid, max(0, avail-lipgloss.Width(flag)))
+		flag = truncate(flag, avail-lipgloss.Width(body))
+		line2 = meta.Render(body)
+	}
 	if flag != "" {
 		line2 += statusStyle.Render(flag)
 	}
+	line2 = gutter + strings.Repeat(" ", metaCol-gutterW) + line2
 
 	return [2]string{padRight(line1, width), padRight(line2, width)}
 }

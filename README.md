@@ -64,18 +64,20 @@ asp --config FILE    # use another config file
 |---|---|
 | `↵` | open the session — or go back to it if it is paused |
 | `ctrl+z` | *inside Claude or Codex:* pause it and return to asp |
+| `c` | end the selected paused session without going into it (it can be resumed later) |
 | `n` | new session: choose the agent, name it, pick a folder |
 | `/` | filter; `f:folder` and `g:group` narrow to one field, `"quoted words"` keep spaces |
 | `f` | browse folders and show the sessions in the one you choose |
 | `g` / `G` | add to a group / remove from a group |
 | `r` / `x` | rename / clear the name |
 | `v` / `y` | everything about the session, full width / copy the opening message |
-| `←` `→` / `a` `d` | show all sessions, Claude only, or Codex only (remembered) |
+| `←` `→` / `a` `d` | switch tabs: all, claude, codex, and your group tabs |
+| `+` / `-` | add a group as a tab (up to 5) / close the current group tab |
 | `j` `k` / `↓` `↑` | move |
 | `h` `l` / `pgup` `pgdn` | previous / next page |
 | `home` `end` | first / last |
 | `?` | all keys, as configured |
-| `q` | quit — asks first if sessions are paused, since quitting ends them |
+| `q` / `ctrl+c` | quit — asks first if sessions are paused, since quitting ends them. `esc` never quits |
 
 The folder browser shows one folder at a time, like glow's file list:
 type to narrow what is in it, `↑` `↓` to move, `↵` or `→` to go into a
@@ -88,6 +90,11 @@ folders you have used before are listed.
 
 Confirmations and errors appear on the line above the key hints and fade
 after a few seconds.
+
+Group tabs sit in the header beside all, claude and codex; a group tab lists
+that group's sessions, and a session started from it joins the group. asp
+reopens on the tab it was closed on. Group tags on sessions (`#arch`) have
+their own colour, `group` in the config.
 
 Paused sessions are shown with `paused` in the list and a count in the
 header. Quitting asp ends them one at a time the way closing a terminal
@@ -114,7 +121,7 @@ cancel  = ["esc", "ctrl+g"]
 ```
 
 Colour roles: `accent`, `accent_muted`, `secondary`, `text`, `text_strong`,
-`muted`, `subtle`, `rule`, `dot_active`, `error`. Key sections: `list`,
+`muted`, `subtle`, `rule`, `dot_active`, `error`, `group`. Key sections: `list`,
 `prompt` (filter, rename, new-session name and folder, groups), `agent`
 (choosing claude or codex), `finder` (the folder browser) and `details`
 (the `v` and `?` pages). The footer, prompts and `?` show whatever you
@@ -128,7 +135,7 @@ twice in one section are reported when asp starts. `ctrl+c` always quits.
   first run it imports `~/.claude/session-names.json` from the old prototype,
   which is only ever read.
 - `~/.config/asp/groups.json` — groups, `{"group": ["<agent>:<id>", …]}`.
-- `~/.config/asp/state.json` — the last view and selected session.
+- `~/.config/asp/state.json` — your group tabs, the tab asp was closed on, and the last selected session.
 
 asp only reads agent data (`~/.claude/projects/`, `~/.codex/sessions/`,
 `~/.codex/archived_sessions/`); it never writes there.
