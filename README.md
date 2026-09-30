@@ -48,7 +48,7 @@ asp --version
 | `ctrl+z` | *inside Claude or Codex:* pause it and return to asp |
 | `n` | new session: choose the agent, name it, pick a folder |
 | `/` | filter; `f:folder` and `g:group` narrow to one field, `"quoted words"` keep spaces |
-| `f` | find a folder (fuzzy, Telescope-style) and show its sessions |
+| `f` | browse folders and show the sessions in the one you choose |
 | `b` / `B` | add to a group / remove from a group |
 | `r` / `x` | rename / clear the name |
 | `v` / `y` | everything about the session, full width / copy the opening message |
@@ -59,12 +59,14 @@ asp --version
 | `?` | all keys |
 | `q` | quit — asks first if sessions are paused, since quitting ends them |
 
-The folder finder searches every folder under your home: type to narrow,
-`↑` `↓` to move, `→` to search inside the highlighted folder, `←` to go back
-out, `↵` to choose. `ctrl+o` opens it from the new-session folder prompt and
-from the filter. In the folder prompt itself, `↑` `↓` pick a suggestion and
-`tab` fills it in; with nothing typed, the folders you have used before are
-listed.
+The folder browser shows one folder at a time, like glow's file list:
+type to narrow what is in it, `↑` `↓` to move, `↵` or `→` to go into a
+folder, `←` or backspace to go back up. Choose with **Use this folder** at
+the top, or `tab` on a highlighted folder. The right pane previews a
+folder's contents or the start of a text file. `ctrl+o` opens it from the
+new-session folder prompt and from the filter. In the folder prompt itself,
+`↑` `↓` pick a suggestion and `tab` fills it in; with nothing typed, the
+folders you have used before are listed.
 
 Paused sessions are shown with `paused` in the list and a count in the
 header. Quitting asp ends them one at a time the way closing a terminal

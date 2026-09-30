@@ -6,7 +6,6 @@ import (
 	"os"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,7 +31,7 @@ type Deps struct {
 	// tea.Exec, which leaves the alt screen for the duration.
 	Exec func(run func() error, done func(error) tea.Msg) tea.Cmd
 	Copy func(string) error // clipboard
-	Home string             // root of the folder index; default $HOME
+	Home string             // where the folder finder starts; default $HOME
 }
 
 // agentView is which agents' sessions are listed. It is remembered between
@@ -105,9 +104,6 @@ type Model struct {
 	sugg    []string // suggestions for the active prompt, best first
 	suggSel int      // highlighted suggestion; -1 when none
 	suggFor string   // input value sugg was computed for
-
-	folders  []string // folder index for suggestions, once built
-	indexing bool
 
 	find   finder
 	scroll int // reader scroll offset
@@ -294,11 +290,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case jobMsg:
 		return m.jobDone(msg)
-	case indexMsg:
-		m.folders, m.indexing = msg, false
-		m.suggFor = "\x00" // recompute
-		m.updateSuggestions()
-		return m, nil
 	case tea.KeyMsg:
 		m.status, m.statusBad, m.err = "", false, ""
 		confirm := m.confirmQuit
@@ -324,11 +315,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		nm := next.(Model)
 		nm.updateSuggestions()
-		if nm.mode == modeNewDir || strings.Contains(nm.input.Value(), "f:") {
-			if c := nm.startIndex(); c != nil {
-				cmd = tea.Batch(cmd, c)
-			}
-		}
 		return nm, cmd
 	}
 	return m, nil

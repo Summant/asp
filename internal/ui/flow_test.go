@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/summant/asp/internal/jobs"
 	"github.com/summant/asp/internal/source"
@@ -320,86 +321,130 @@ func TestFilterByQuotedFolder(t *testing.T) {
 	}
 }
 
-func TestFolderSuggestionsAndBrowser(t *testing.T) {
+func TestFolderSuggestionsAndFinder(t *testing.T) {
 	w := newWorld(t, testItems())
 	for _, d := range []string{"dotfiles/.config/waybar", "dotfiles/.config/kitty", "projects/asp", "projects/web"} {
 		if err := os.MkdirAll(filepath.Join(w.home, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(w.home, "projects", "notes.txt"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(w.home, "projects", "notes.txt"), []byte("first line\nsecond"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m := pressRun(w.model, "n", "enter", "enter") // claude, no name → folder
-	if m.folders == nil {
-		t.Fatal("folder index was not built")
+
+	// A typed word matches recent folders and folders directly in ~, never deeper.
+	m = typeText(m, "proj")
+	if len(m.sugg) != 1 || m.sugg[0] != collapseHome(filepath.Join(w.home, "projects")) {
+		t.Errorf("word suggestions %v", m.sugg)
 	}
-	m = typeText(m, "dotwayb")
-	if len(m.sugg) == 0 || !strings.HasSuffix(m.sugg[0], "dotfiles/.config/waybar") {
-		t.Errorf("fuzzy suggestions %v", m.sugg)
+	m.input.SetValue("")
+	m = typeText(m, "waybar")
+	if len(m.sugg) != 0 {
+		t.Errorf("deep folder suggested: %v", m.sugg)
 	}
 	m.input.SetValue(w.home + "/pro")
 	m.input.CursorEnd()
 	m = typeText(m, "j")
-	m = pressRun(m, "tab") // first suggestion filled in
+	m = pressRun(m, "tab")
 	if m.input.Value() != collapseHome(w.home+"/projects")+"/" {
 		t.Errorf("tab filled %q", m.input.Value())
 	}
-	m = typeText(m, "a")
-	if len(m.sugg) != 1 || !strings.HasSuffix(m.sugg[0], "projects/asp") {
-		t.Errorf("child suggestions %v", m.sugg)
-	}
 
-	// ctrl+o opens the finder scoped to the typed folder.
-	m = pressRun(m, "backspace", "ctrl+o")
-	if m.mode != modeFind || m.find.scope != filepath.Join(w.home, "projects") {
-		t.Fatalf("finder mode %v scope %q", m.mode, m.find.scope)
+	// ctrl+o opens the finder in the typed folder, one level only.
+	m = pressRun(m, "ctrl+o")
+	if m.mode != modeFind || m.find.dir != filepath.Join(w.home, "projects") {
+		t.Fatalf("finder mode %v dir %q", m.mode, m.find.dir)
 	}
 	out := ansi.Strip(m.View())
-	for _, want := range []string{"./  (this folder)", "asp/", "web/", "notes.txt"} {
+	for _, want := range []string{"Use this folder", "asp/", "web/", "notes.txt", "2 folders  ·  1 file"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("finder missing %q:\n%s", want, out)
 		}
 	}
-	m = pressRun(m, "left") // widen to home: every folder, fuzzily
-	m = typeText(m, "dotwayb")
-	if h, _ := m.findSelected(); h.path != filepath.Join(w.home, "dotfiles/.config/waybar") {
-		t.Errorf("best match %q", h.path)
+	m = pressRun(m, "left") // up to ~
+	out = ansi.Strip(m.View())
+	if !strings.Contains(out, "dotfiles/") || strings.Contains(out, ".config") || strings.Contains(out, "waybar") {
+		t.Errorf("~ should list only its own entries:\n%s", out)
 	}
-	// The best match sits at the bottom, next to the prompt.
-	lines := plainLines(m)
-	if !strings.Contains(lines[len(lines)-3], "dotfiles/.config/waybar/") {
-		t.Errorf("best match not above the prompt: %q", lines[len(lines)-3])
+	if r, _ := m.findSelected(); r.name != "projects" {
+		t.Errorf("after going up, %q is selected, want the folder just left", r.name)
 	}
-	m = pressRun(m, "enter")
+	m = typeText(m, "dot")
+	if r, _ := m.findSelected(); r.name != "dotfiles" {
+		t.Fatalf("typing selected %q", r.name)
+	}
+	m = pressRun(m, "enter") // into dotfiles
+	if m.find.dir != filepath.Join(w.home, "dotfiles") || m.input.Value() != "" {
+		t.Fatalf("enter: dir %q filter %q", m.find.dir, m.input.Value())
+	}
+	m = typeText(m, ".c")
+	m = pressRun(m, "enter") // hidden folder once "." is typed
+	m = typeText(m, "way")
+	m = pressRun(m, "tab") // use waybar without going in
 	if m.mode != modeNewDir || m.input.Value() != collapseHome(filepath.Join(w.home, "dotfiles/.config/waybar")) {
 		t.Errorf("chosen: mode %v value %q", m.mode, m.input.Value())
 	}
 }
 
 func TestFinderFiltersTheList(t *testing.T) {
-	items := testItems()
-	w := newWorld(t, items)
+	w := newWorld(t, testItems())
 	proj := filepath.Join(w.home, "work", "proj")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	w.disk[2].Session.CWD = proj
 	m := pressRun(w.model, "f")
-	if m.mode != modeFind || m.find.scope != w.home {
-		t.Fatalf("f: mode %v scope %q", m.mode, m.find.scope)
+	if m.mode != modeFind || m.find.dir != w.home {
+		t.Fatalf("f: mode %v dir %q", m.mode, m.find.dir)
 	}
-	m = typeText(m, "wp")
+	m = typeText(m, "work")
+	m = pressRun(m, "enter")
+	m = typeText(m, "proj")
+	m = pressRun(m, "enter") // into proj
+	if r, _ := m.findSelected(); !r.here || !strings.Contains(footer(m), "↵ use this folder") {
+		t.Fatalf("empty folder should offer 'use this folder', footer %q", footer(m))
+	}
 	m = pressRun(m, "enter")
 	if m.mode != modeList || m.query != "f:"+collapseHome(proj) {
 		t.Fatalf("mode %v query %q", m.mode, m.query)
 	}
-	// The key hints stay; the filter is shown in the header.
 	if !strings.Contains(footer(m), "↵ open") {
 		t.Errorf("footer lost its keys: %q", footer(m))
 	}
 	if !strings.Contains(plainLines(m)[1], "filter: f:") {
 		t.Errorf("header %q", plainLines(m)[1])
+	}
+}
+
+func TestFinderPreviewAndAlignment(t *testing.T) {
+	w := newWorld(t, testItems())
+	if err := os.MkdirAll(filepath.Join(w.home, "日本語フォルダ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.home, "readme.md"), []byte("# Title\nbody text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.home, "blob.bin"), []byte{0, 1, 2}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range [][2]int{{80, 30}, {120, 30}} {
+		m := pressRun(sized(w.model, size[0], size[1]), "f")
+		m = typeText(m, "readme")
+		lines := plainLines(m)
+		for i, l := range lines {
+			if lipgloss.Width(l) > size[0] {
+				t.Errorf("%v line %d too wide: %q", size, i, l)
+			}
+		}
+		if size[0] >= breakpoint && !strings.Contains(strings.Join(lines, "\n"), "# Title") {
+			t.Error("text file preview missing")
+		}
+	}
+	m := pressRun(w.model, "f")
+	m = typeText(m, "blob")
+	if !strings.Contains(ansi.Strip(m.View()), "(binary file)") {
+		t.Error("binary file previewed as text")
 	}
 }
 
@@ -453,5 +498,29 @@ func TestReadCopyHelp(t *testing.T) {
 	m = pressRun(m, "x")
 	if m.mode != modeList {
 		t.Error("any key should close help")
+	}
+}
+
+func TestFuzzyName(t *testing.T) {
+	cases := []struct {
+		name, q string
+		ok      bool
+	}{
+		{".config", ".", true},  // match at the very start (negative score)
+		{".config", ".c", true}, //
+		{"dotfiles", "dot", true},
+		{"dotfiles", "dfs", true},
+		{"dotfiles", "xyz", false},
+		{"日本語フォルダ", "日フ", true},
+	}
+	for _, c := range cases {
+		if _, _, ok := fuzzyName(c.name, c.q); ok != c.ok {
+			t.Errorf("fuzzyName(%q, %q) ok = %v", c.name, c.q, ok)
+		}
+	}
+	a, _, _ := fuzzyName("dotfiles", "dot")
+	b, _, _ := fuzzyName("xdoxxtxx", "dot")
+	if a >= b {
+		t.Errorf("tight prefix match %d should outrank scattered %d", a, b)
 	}
 }

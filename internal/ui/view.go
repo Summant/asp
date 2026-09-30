@@ -62,14 +62,14 @@ func (m Model) View() string {
 		listW, detailW := m.columns()
 		var body []string
 		if m.mode == modeFind {
-			body = m.findRows(listW, m.bodyRows()+1)
+			body = m.finderRows(listW, m.bodyRows()+1)
 		} else {
 			body = m.listRows(listW, m.bodyRows()+1) // the last row holds the dots
 		}
 		if detailW > 0 {
 			var detail []string
 			if m.mode == modeFind {
-				detail = m.findPreview(detailW)
+				detail = m.finderPreview(detailW)
 			} else {
 				detail = m.detailRows(detailW)
 			}
@@ -194,21 +194,23 @@ func (m Model) suggestionRows(w, limit int) []string {
 }
 
 // dots is the page indicator, hidden when everything fits on one page.
-func (m Model) dots(w int) string {
-	per := m.perPage()
-	if len(m.order) <= per {
+func (m Model) dots(w int) string { return pageDots(len(m.order), m.perPage(), m.cursor, w) }
+
+// pageDots draws glow's pagination for n items, per to a page, with the
+// item at cursor on the active page; "3/12" when the dots would not fit.
+func pageDots(n, per, cursor, w int) string {
+	if n <= per {
 		return ""
 	}
 	p := paginator.New(paginator.WithPerPage(per))
-	p.SetTotalPages(len(m.order))
-	p.Page = m.cursor / per
+	p.SetTotalPages(n)
+	p.Page = cursor / per
 	p.Type = paginator.Dots
 	p.ActiveDot = dotOn.Render(dot) + " "
 	p.InactiveDot = dotOff.Render(dot) + " "
 	if v := strings.TrimRight(p.View(), " "); lipgloss.Width(v) <= w {
 		return v
 	}
-	// Too many pages for dots: fall back to "3/12".
 	return dotOn.Render(fmt.Sprintf("%d/%d", p.Page+1, p.TotalPages))
 }
 
@@ -330,91 +332,6 @@ func helpLines(w int) []string {
 	return append(rows, "", helpDesc.Render("any key to close"))
 }
 
-// findRows draws the finder in the list column: the scope on top, results
-// anchored to the bottom with the best match nearest the prompt.
-func (m Model) findRows(w, n int) []string {
-	f := m.find
-	rows := make([]string, n)
-	rows[0] = detailHead.Render("find folder") + metaStyle.Render("  in  ") + metaSel.Render(truncateLeft(collapseHome(f.scope)+"/", w-14))
-	room := n - 2
-	if len(f.results) == 0 {
-		rows[n-1] = "  " + metaStyle.Render("no folders match")
-		return rows
-	}
-	// Scroll so the selection stays visible, counting up from the bottom.
-	first := max(0, f.sel-room+1)
-	for i := first; i < min(len(f.results), first+room); i++ {
-		r := f.results[i]
-		label := f.rel(r.path)
-		if r.path == f.scope {
-			label = "./  (this folder)"
-		}
-		row := n - 1 - (i - first)
-		selected := i == f.sel
-		rows[row] = m.findRow(label, r.pos, w, selected)
-	}
-	return rows
-}
-
-// findRow renders one result with its matched letters highlighted.
-func (m Model) findRow(label string, pos []int, w int, selected bool) string {
-	gutter, base := "  ", titleStyle
-	if selected {
-		gutter, base = gutterSel.Render(gutterBar)+" ", titleSel
-	}
-	label = truncateLeft(label, w-gutterW)
-	runes := []rune(label)
-	// Positions refer to the untruncated label; shift them if cut on the left.
-	shift := len([]rune(label)) - len(runes)
-	if strings.HasPrefix(label, ellipsis) {
-		shift = 0
-		pos = nil // a cut label keeps its colour but not the highlights
-	}
-	hl := map[int]bool{}
-	for _, p := range pos {
-		hl[p-shift] = true
-	}
-	var b strings.Builder
-	for i, r := range runes {
-		if hl[i] {
-			b.WriteString(statusStyle.Render(string(r)))
-		} else {
-			b.WriteString(base.Render(string(r)))
-		}
-	}
-	return gutter + b.String()
-}
-
-// findPreview lists the highlighted folder's contents in the detail pane.
-func (m Model) findPreview(w int) []string {
-	h, ok := m.findSelected()
-	if !ok {
-		return nil
-	}
-	rows := []string{detailHead.Render(truncateLeft(collapseHome(h.path)+"/", w)), ""}
-	entries := readEntries(h.path)
-	shown := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.name, ".") {
-			continue
-		}
-		if shown == m.bodyRows()-3 {
-			rows = append(rows, metaStyle.Render(ellipsis))
-			break
-		}
-		if e.dir {
-			rows = append(rows, detailVal.Render(truncate(e.name+"/", w)))
-		} else {
-			rows = append(rows, metaStyle.Render(truncate(e.name, w)))
-		}
-		shown++
-	}
-	if shown == 0 {
-		rows = append(rows, metaStyle.Render("empty"))
-	}
-	return rows
-}
-
 // wrap word-wraps s to width cells, at most maxLines, ending in "…" if cut.
 func wrap(s string, width, maxLines int) []string {
 	if width <= 0 {
@@ -471,8 +388,15 @@ func (m Model) footer(w int) string {
 	case modeGroupRemove:
 		return m.promptLine(w, promptLabel.Render("remove from group  "), hint("↑↓ pick "+sep+" enter remove "+sep+" esc cancel"))
 	case modeFind:
-		count := fmt.Sprintf("%d/%d", len(m.find.results), len(m.find.all)+1)
-		return m.promptLine(w, promptLabel.Render("find  "), hint(count+"  "+sep+"  ↵ choose "+sep+" → in "+sep+" ← out "+sep+" esc"))
+		r, _ := m.findSelected()
+		keys := "← back " + sep + " esc"
+		switch {
+		case r.here:
+			keys = "↵ use this folder " + sep + " " + keys
+		case r.dir:
+			keys = "↵ open " + sep + " tab use " + sep + " " + keys
+		}
+		return m.promptLine(w, promptLabel.Render("find  "), hint(keys))
 	case modeRead:
 		return spread(w, hint("j k scroll "+sep+" y copy "+sep+" esc back"), "")
 	case modeHelp:
