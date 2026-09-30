@@ -495,9 +495,9 @@ func TestReadCopyHelp(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View()), "ctrl+z") {
 		t.Error("help does not explain ctrl+z")
 	}
-	m = pressRun(m, "x")
+	m = pressRun(m, "esc")
 	if m.mode != modeList {
-		t.Error("any key should close help")
+		t.Error("esc should close help")
 	}
 }
 

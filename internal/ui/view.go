@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/paginator"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/summant/asp/internal/config"
 	"github.com/summant/asp/internal/source"
 )
 
@@ -45,10 +46,7 @@ func (m Model) View() string {
 
 	switch m.mode {
 	case modeRead, modeHelp:
-		body := m.readLines()
-		if m.mode == modeHelp {
-			body = helpLines(inner)
-		}
+		body := m.pageLines()
 		n := m.bodyRows() + 1
 		body = body[min(m.scroll, len(body)):]
 		for i := 0; i < n; i++ {
@@ -140,7 +138,7 @@ func (m Model) listRows(w, n int) []string {
 		rows = append(rows,
 			titleStyle.Render("No Claude Code or Codex sessions yet."),
 			"",
-			helpKey.Render("n")+"  "+helpDesc.Render("start one"))
+			helpKey.Render(m.keys.show("list", "new"))+"  "+helpDesc.Render("start one"))
 	case len(m.order) == 0 && m.query != "":
 		rows = append(rows, metaStyle.Render(truncate(fmt.Sprintf("no sessions match %q", m.query), w)))
 	case len(m.order) == 0:
@@ -245,7 +243,7 @@ func (m Model) detailRows(w int) []string {
 		rows = append(rows, kv("groups", truncate("#"+strings.Join(it.Groups, " #"), valW)))
 	}
 	if it.paused() {
-		rows = append(rows, detailKey.Render(padRight("status", detailKeyW))+statusStyle.Render("paused · ↵ to go back"))
+		rows = append(rows, detailKey.Render(padRight("status", detailKeyW))+statusStyle.Render("paused · "+m.keys.show("list", "open")+" to go back"))
 	}
 	if o := it.Opening(); o != "" {
 		rows = append(rows, "", detailHead.Render("opening message"))
@@ -254,6 +252,14 @@ func (m Model) detailRows(w int) []string {
 		}
 	}
 	return rows
+}
+
+// pageLines is the full-width page being shown: help or details.
+func (m Model) pageLines() []string {
+	if m.mode == modeHelp {
+		return m.helpLines(m.w - 2*margin)
+	}
+	return m.readLines()
 }
 
 // readLines is the details view: everything the detail pane shows, at full
@@ -295,7 +301,7 @@ func (m Model) readLines() []string {
 		rows = append(rows, kv("groups", "#"+strings.Join(it.Groups, " #"))...)
 	}
 	if it.paused() {
-		rows = append(rows, kv("status", "paused · ↵ to go back")...)
+		rows = append(rows, kv("status", "paused · "+m.keys.show("list", "open")+" to go back")...)
 	}
 	rows = append(rows, "", detailHead.Render("opening message"))
 	if it.Session.Opening == "" {
@@ -307,29 +313,24 @@ func (m Model) readLines() []string {
 	return rows
 }
 
-var helpKeys = [][2]string{
-	{"↵", "open the session · go back to a paused one"},
-	{"ctrl+z", "inside claude or codex: pause it and return here"},
-	{"n", "new session: agent, name, folder"},
-	{"/", "filter · f:folder  g:group  \"quoted words\""},
-	{"f", "find a folder and show its sessions"},
-	{"b  B", "add to a group · remove from a group"},
-	{"r  x", "rename · clear the name"},
-	{"v  y", "everything about the session · copy the opening message"},
-	{"←→  a d", "all · claude · codex"},
-	{"j k  ↑↓", "move"},
-	{"h l", "previous · next page"},
-	{"g G", "first · last"},
-	{"ctrl+o", "in a folder prompt or filter: find a folder"},
-	{"q", "quit (ends paused sessions)"},
-}
-
-func helpLines(w int) []string {
+// helpLines lists every list key, as configured, plus ctrl+z.
+func (m Model) helpLines(w int) []string {
 	rows := []string{detailHead.Render("keys"), ""}
-	for _, k := range helpKeys {
-		rows = append(rows, helpKey.Render(padRight(k[0], 10))+helpDesc.Render(truncate(k[1], w-10)))
+	line := func(keys, desc string) {
+		rows = append(rows, helpKey.Render(padRight(keys, 14))+helpDesc.Render(truncate(desc, w-14)))
 	}
-	return append(rows, "", helpDesc.Render("any key to close"))
+	line("ctrl+z", "inside claude or codex: pause it and return here")
+	for _, s := range config.Sections {
+		if s.Name != "list" {
+			continue
+		}
+		for _, b := range s.Bindings {
+			if keys := m.keys.all("list", b.Action); keys != "" {
+				line(keys, b.Desc)
+			}
+		}
+	}
+	return append(rows, "", helpDesc.Render("change any of these in "+collapseHome(config.Path())))
 }
 
 // wrap word-wraps s to width cells, at most maxLines, ending in "…" if cut.
@@ -352,8 +353,10 @@ func wrap(s string, width, maxLines int) []string {
 	return lines
 }
 
-// footer is the help line, a status message, or the active prompt.
+// footer is the help line, a status message, or the active prompt. Every
+// key shown comes from the keymap, so it matches config.toml.
 func (m Model) footer(w int) string {
+	k := m.keys
 	newLabel := func(step string) string {
 		tag := tagClaude
 		if m.newAgent == source.Codex {
@@ -361,46 +364,47 @@ func (m Model) footer(w int) string {
 		}
 		return promptLabel.Render("new ") + tag.Render(m.newAgent.Label()) + promptLabel.Render(" session "+sep+" "+step+"  ")
 	}
-	hint := func(s string) string { return helpDesc.Render(s) }
+	pick := k.pair("prompt", "prev", "next")
 	switch m.mode {
 	case modeFilter:
-		right := hint(fmt.Sprintf("%d of %d", len(m.order), m.viewTotal()))
+		right := helpDesc.Render(fmt.Sprintf("%d of %d", len(m.order), m.viewTotal()))
 		if len(m.sugg) > 0 {
-			right = hint("↑↓ pick " + sep + " tab fill")
+			right = hint(pick, "pick", k.show("prompt", "fill"), "fill")
 		}
 		return m.promptLine(w, promptLabel.Render("filter  "), right)
 	case modeRename:
-		return m.promptLine(w, promptLabel.Render("rename  "), hint("enter save "+sep+" esc cancel"))
+		return m.promptLine(w, promptLabel.Render("rename  "), hint(k.show("prompt", "confirm"), "save", k.show("prompt", "cancel"), "cancel"))
 	case modeNewAgent:
 		left := promptLabel.Render("new session  ") + m.agentChoice()
-		right := hint("←→ choose " + sep + " enter next " + sep + " esc cancel")
-		return spread(w, left, right)
+		return spread(w, left, hint(k.show("agent", "toggle"), "switch", k.show("agent", "confirm"), "next", k.show("agent", "cancel"), "cancel"))
 	case modeNewName:
-		return m.promptLine(w, newLabel("name"), hint("enter next "+sep+" empty keeps the auto label"))
+		return m.promptLine(w, newLabel("name"), hint(k.show("prompt", "confirm"), "next", k.show("prompt", "cancel"), "cancel"))
 	case modeNewDir:
-		right := hint("↑↓ pick " + sep + " tab fill " + sep + " ctrl+o browse " + sep + " enter start")
+		right := hint(pick, "pick", k.show("prompt", "fill"), "fill", k.show("prompt", "browse"), "browse", k.show("prompt", "confirm"), "start")
 		if m.err != "" {
 			right = errStyle.Render(m.err)
 		}
 		return m.promptLine(w, newLabel("folder"), right)
 	case modeGroupAdd:
-		return m.promptLine(w, promptLabel.Render("add to group  "), hint("↑↓ pick "+sep+" enter add "+sep+" esc cancel"))
+		return m.promptLine(w, promptLabel.Render("add to group  "), hint(pick, "pick", k.show("prompt", "confirm"), "add", k.show("prompt", "cancel"), "cancel"))
 	case modeGroupRemove:
-		return m.promptLine(w, promptLabel.Render("remove from group  "), hint("↑↓ pick "+sep+" enter remove "+sep+" esc cancel"))
+		return m.promptLine(w, promptLabel.Render("remove from group  "), hint(pick, "pick", k.show("prompt", "confirm"), "remove", k.show("prompt", "cancel"), "cancel"))
 	case modeFind:
 		r, _ := m.findSelected()
-		keys := "← back " + sep + " esc"
+		var keys string
 		switch {
 		case r.here:
-			keys = "↵ use this folder " + sep + " " + keys
+			keys = hint(k.show("finder", "open"), "use this folder", k.show("finder", "parent"), "back", k.show("finder", "cancel"), "close")
 		case r.dir:
-			keys = "↵ open " + sep + " tab use " + sep + " " + keys
+			keys = hint(k.show("finder", "open"), "open", k.show("finder", "use"), "use", k.show("finder", "parent"), "back", k.show("finder", "cancel"), "close")
+		default:
+			keys = hint(k.show("finder", "parent"), "back", k.show("finder", "cancel"), "close")
 		}
-		return m.promptLine(w, promptLabel.Render("find  "), hint(keys))
+		return m.promptLine(w, promptLabel.Render("find  "), keys)
 	case modeRead:
-		return spread(w, hint("j k scroll "+sep+" y copy "+sep+" esc back"), "")
+		return hint(k.pair("details", "up", "down"), "scroll", k.show("details", "copy"), "copy", k.show("details", "back"), "back")
 	case modeHelp:
-		return ""
+		return hint(k.pair("details", "up", "down"), "scroll", k.show("details", "back"), "back")
 	}
 
 	if m.status != "" {
@@ -412,11 +416,24 @@ func (m Model) footer(w int) string {
 	if len(m.items) == 0 {
 		return ""
 	}
-	entries := []string{"↵ open", "n new", "/ filter", "f folders", "b group", "r rename", "v details", "←→ view", "? keys", "q quit"}
+	entries := [][2]string{
+		{k.show("list", "open"), "open"},
+		{k.show("list", "new"), "new"},
+		{k.show("list", "filter"), "filter"},
+		{k.show("list", "folders"), "folders"},
+		{k.show("list", "group_add"), "group"},
+		{k.show("list", "rename"), "rename"},
+		{k.show("list", "details"), "details"},
+		{k.pair("list", "view_prev", "view_next"), "view"},
+		{k.show("list", "help"), "keys"},
+		{k.show("list", "quit"), "quit"},
+	}
 	var out string
 	for _, e := range entries {
-		k, d, _ := strings.Cut(e, " ")
-		next := helpKey.Render(k) + " " + helpDesc.Render(d)
+		if e[0] == "" {
+			continue // unbound
+		}
+		next := helpKey.Render(e[0]) + " " + helpDesc.Render(e[1])
 		if out != "" {
 			next = "   " + next
 		}

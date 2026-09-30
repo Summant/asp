@@ -169,10 +169,15 @@ func (m Model) updateFind(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	rows := m.findRows()
 	sel, _ := m.findSelected()
 	per := m.findPerPage()
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(false)
-	case "esc":
+	}
+	if msg.String() == "backspace" && m.input.Value() == "" {
+		m.up() // backspace with nothing typed goes up, as in most pickers
+		return m, nil
+	}
+	switch m.keys.action("finder", msg) {
+	case "cancel":
 		m.mode = f.from
 		if f.from == modeList {
 			m.closeInput()
@@ -180,31 +185,29 @@ func (m Model) updateFind(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openInput(f.saved)
 		}
 		return m, nil
-	case "down", "ctrl+n", "ctrl+j":
+	case "next":
 		f.sel = min(f.sel+1, len(rows)-1)
 		return m, nil
-	case "up", "ctrl+p", "ctrl+k":
+	case "prev":
 		f.sel = max(f.sel-1, 0)
 		return m, nil
-	case "pgdown":
+	case "next_page":
 		if next := (f.sel/per + 1) * per; next < len(rows) {
 			f.sel = next
 		}
 		return m, nil
-	case "pgup":
+	case "prev_page":
 		f.sel = max(0, (f.sel/per-1)*per)
 		return m, nil
-	case "enter", "right":
+	case "open":
 		switch {
 		case sel.here:
-			if msg.String() == "enter" {
-				return m.chooseFolder(f.dir)
-			}
+			return m.chooseFolder(f.dir)
 		case sel.dir:
 			m.enter(filepath.Join(f.dir, sel.name))
 		}
 		return m, nil
-	case "tab": // use the highlighted folder without going into it
+	case "use": // the highlighted folder, without going into it
 		if sel.dir {
 			if sel.here {
 				return m.chooseFolder(f.dir)
@@ -212,14 +215,9 @@ func (m Model) updateFind(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.chooseFolder(filepath.Join(f.dir, sel.name))
 		}
 		return m, nil
-	case "left":
+	case "parent":
 		m.up()
 		return m, nil
-	case "backspace":
-		if m.input.Value() == "" {
-			m.up()
-			return m, nil
-		}
 	}
 	before := m.input.Value()
 	var cmd tea.Cmd

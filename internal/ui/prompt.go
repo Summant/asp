@@ -10,22 +10,23 @@ import (
 
 // updateAgent is the first step of a new session: which agent.
 func (m Model) updateAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.mode = modeList
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(false)
-	case "left", "right", "h", "l", "a", "d", "tab", "shift+tab", "up", "down", "j", "k":
+	}
+	switch m.keys.action("agent", msg) {
+	case "cancel":
+		m.mode = modeList
+	case "toggle":
 		if m.newAgent == source.Claude {
 			m.newAgent = source.Codex
 		} else {
 			m.newAgent = source.Claude
 		}
-	case "c":
+	case "claude":
 		m.newAgent = source.Claude
-	case "o":
+	case "codex":
 		m.newAgent = source.Codex
-	case "enter":
+	case "confirm":
 		m.mode = modeNewName
 		m.openInput("")
 	}
@@ -33,37 +34,38 @@ func (m Model) updateAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(false)
-	case "esc":
+	}
+	switch m.keys.action("prompt", msg) {
+	case "cancel":
 		m.query = ""
 		m.closeInput()
 		m.reorder()
 		return m, nil
-	case "enter":
+	case "confirm":
 		if m.suggSel >= 0 && m.suggSel < len(m.sugg) {
 			m.fillToken(m.sugg[m.suggSel])
 			return m, nil
 		}
 		m.closeInput()
 		return m, nil
-	case "ctrl+o":
+	case "browse":
 		m.openFinder(modeFilter, m.deps.Home)
 		return m, nil
-	case "tab":
+	case "fill":
 		if len(m.sugg) > 0 {
 			m.fillToken(m.sugg[max(0, m.suggSel)])
 		}
 		return m, nil
-	case "down", "ctrl+n":
+	case "next":
 		if len(m.sugg) > 0 {
 			m.suggSel = min(m.suggSel+1, len(m.sugg)-1)
 		} else {
 			m.move(1)
 		}
 		return m, nil
-	case "up", "ctrl+p":
+	case "prev":
 		if len(m.sugg) > 0 {
 			m.suggSel = max(m.suggSel-1, -1)
 		} else {
@@ -107,23 +109,24 @@ func (m *Model) fillToken(s string) {
 }
 
 func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(false)
-	case "esc":
+	}
+	switch m.keys.action("prompt", msg) {
+	case "cancel":
 		m.closeInput()
 		return m, nil
-	case "down", "ctrl+n":
+	case "next":
 		if len(m.sugg) > 0 {
 			m.suggSel = min(m.suggSel+1, len(m.sugg)-1)
 		}
 		return m, nil
-	case "up", "ctrl+p":
+	case "prev":
 		if len(m.sugg) > 0 {
 			m.suggSel = max(m.suggSel-1, -1)
 		}
 		return m, nil
-	case "tab":
+	case "fill":
 		if len(m.sugg) > 0 {
 			v := m.sugg[max(0, m.suggSel)]
 			if m.mode == modeNewDir {
@@ -137,7 +140,7 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.CursorEnd()
 		}
 		return m, nil
-	case "ctrl+o":
+	case "browse":
 		if m.mode == modeNewDir {
 			start := expand(m.input.Value())
 			if m.input.Value() == "" || !isDir(start) {
@@ -146,7 +149,7 @@ func (m Model) updatePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openFinder(modeNewDir, start)
 		}
 		return m, nil
-	case "enter":
+	case "confirm":
 		val := strings.TrimSpace(m.input.Value())
 		if m.suggSel >= 0 && m.suggSel < len(m.sugg) {
 			val = m.sugg[m.suggSel]

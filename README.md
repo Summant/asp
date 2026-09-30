@@ -10,7 +10,7 @@ list, and `↵` on it to carry on exactly where you were.
 To build:
 
 - **Go 1.27+**. The Go libraries asp uses (Bubble Tea, Lip Gloss, Bubbles,
-  `x/ansi`, `x/sys`, `atotto/clipboard`, `go-osc52`) are downloaded
+  `x/ansi`, `x/sys`, `atotto/clipboard`, `go-osc52`, `BurntSushi/toml`) are downloaded
   automatically by `go build`; see `go.mod`.
 - `make` (optional; `go build -o asp .` does the same).
 
@@ -40,6 +40,8 @@ make install   # builds and writes ~/.local/bin/asp — nothing else
 asp            # the picker
 asp --list     # tab-separated: agent, id, modified, messages, folder, name, groups, opening
 asp --version
+asp --write-config   # write ~/.config/asp/config.toml with every default, commented
+asp --config FILE    # use another config file
 ```
 
 | key | action |
@@ -56,7 +58,7 @@ asp --version
 | `j` `k` / `↓` `↑` | move |
 | `h` `l` / `pgup` `pgdn` | previous / next page |
 | `g` `G` | first / last |
-| `?` | all keys |
+| `?` | all keys, as configured |
 | `q` | quit — asks first if sessions are paused, since quitting ends them |
 
 The folder browser shows one folder at a time, like glow's file list:
@@ -73,8 +75,36 @@ header. Quitting asp ends them one at a time the way closing a terminal
 would, waiting for each to finish; Claude prints the `claude --resume …`
 line for each as it goes, and everything said so far can be resumed.
 
+## Configuration
+
+Colours and keys live in `~/.config/asp/config.toml` (or
+`$XDG_CONFIG_HOME/asp/config.toml`). `asp --write-config` writes one with
+every default and what it does; change what you like and delete the rest.
+
+```toml
+[colors]
+accent = "#ff79c6"        # "#rrggbb", "#rgb" or an ANSI number 0-255
+text   = "#e0e0e0"
+
+[keys.list]
+quit    = ["Q"]           # q no longer quits
+details = ["i", "v"]
+
+[keys.prompt]
+cancel  = ["esc", "ctrl+g"]
+```
+
+Colour roles: `accent`, `accent_muted`, `secondary`, `text`, `text_strong`,
+`muted`, `subtle`, `rule`, `dot_active`, `error`. Key sections: `list`,
+`prompt` (filter, rename, new-session name and folder, groups), `agent`
+(choosing claude or codex), `finder` (the folder browser) and `details`
+(the `v` and `?` pages). The footer, prompts and `?` show whatever you
+configure. Unknown settings, bad colours, unknown key names and a key bound
+twice in one section are reported when asp starts. `ctrl+c` always quits.
+
 ## Where things live
 
+- `~/.config/asp/config.toml` — colours and keys (optional).
 - `~/.config/asp/names.json` — session names, `{"<agent>:<id>": "name"}`. On
   first run it imports `~/.claude/session-names.json` from the old prototype,
   which is only ever read.

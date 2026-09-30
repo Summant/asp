@@ -32,6 +32,9 @@ type Deps struct {
 	Exec func(run func() error, done func(error) tea.Msg) tea.Cmd
 	Copy func(string) error // clipboard
 	Home string             // where the folder finder starts; default $HOME
+	// Keys maps section → action → keys, as config.Config.Keys; nil uses
+	// the defaults.
+	Keys map[string]map[string][]string
 }
 
 // agentView is which agents' sessions are listed. It is remembered between
@@ -109,6 +112,7 @@ type Model struct {
 	scroll int // reader scroll offset
 
 	deps Deps
+	keys keymap
 	w, h int
 }
 
@@ -133,7 +137,7 @@ func New(items []Item, d Deps) Model {
 	ti.TextStyle = fg(text)
 
 	saved := d.Store.State()
-	m := Model{items: items, deps: d, input: ti, view: parseView(saved.View), suggSel: -1}
+	m := Model{items: items, deps: d, keys: newKeymap(d.Keys), input: ti, view: parseView(saved.View), suggSel: -1}
 	m.attachJobs()
 	m.reorder()
 	m.selectKey(saved.Last)
@@ -308,8 +312,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeRead:
 			next, cmd = m.updateRead(msg)
 		case modeHelp:
-			m.mode = modeList
-			return m, nil
+			next, cmd = m.updateRead(msg)
 		default:
 			next, cmd = m.updateList(msg, confirm)
 		}
@@ -321,68 +324,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
-	per := m.perPage()
-	switch msg.String() {
-	case "q", "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(confirm)
-	case "esc":
+	}
+	per := m.perPage()
+	switch m.keys.action("list", msg) {
+	case "quit":
+		return m.quit(confirm)
+	case "back":
 		if m.query != "" {
 			m.query = ""
 			m.reorder()
 			return m, nil
 		}
 		return m.quit(confirm)
-	case "j", "down":
+	case "down":
 		m.move(1)
-	case "k", "up":
+	case "up":
 		m.move(-1)
-	case "l", "pgdown":
+	case "next_page":
 		if next := (m.cursor/per + 1) * per; next < len(m.order) {
 			m.cursor = next
 		}
-	case "h", "pgup":
+	case "prev_page":
 		m.cursor = max(0, (m.cursor/per-1)*per)
-	case "g", "home":
+	case "first":
 		m.cursor = 0
-	case "G", "end":
+	case "last":
 		m.cursor = max(0, len(m.order)-1)
-	case "right", "d":
+	case "view_next":
 		m.setView((m.view + 1) % numViews)
-	case "left", "a":
+	case "view_prev":
 		m.setView((m.view + numViews - 1) % numViews)
-	case "/":
+	case "filter":
 		m.mode = modeFilter
 		m.query = ""
 		m.reorder()
 		m.openInput("")
-	case "enter":
+	case "open":
 		return m.open()
-	case "n":
+	case "new":
 		m.newAgent = source.Claude
 		if m.view == viewCodex {
 			m.newAgent = source.Codex
 		}
 		m.mode = modeNewAgent
-	case "r":
+	case "rename":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			m.mode = modeRename
 			m.openInput(it.Name)
 		}
-	case "x":
+	case "unname":
 		if it, ok := m.current(); ok && it.Named() && !it.placeholder() {
 			m.setName("")
 			if m.status == "" {
 				m.status = "name cleared"
 			}
 		}
-	case "f":
+	case "folders":
 		m.openFinder(modeList, m.deps.Home)
-	case "b":
+	case "group_add":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			m.mode = modeGroupAdd
 			m.openInput("")
 		}
-	case "B":
+	case "group_remove":
 		if it, ok := m.current(); ok && !it.placeholder() {
 			if len(it.Groups) == 0 {
 				m.status = "not in any group"
@@ -391,13 +397,13 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 			m.mode = modeGroupRemove
 			m.openInput("")
 		}
-	case "y":
+	case "copy":
 		m.copyOpening()
-	case "v":
+	case "details":
 		if _, ok := m.current(); ok {
 			m.mode, m.scroll = modeRead, 0
 		}
-	case "?":
+	case "help":
 		m.mode, m.scroll = modeHelp, 0
 	}
 	return m, nil
@@ -433,7 +439,7 @@ func (m *Model) closeInput() {
 func (m Model) quit(confirmed bool) (tea.Model, tea.Cmd) {
 	if n := m.pausedCount(); n > 0 && !confirmed {
 		m.confirmQuit = true
-		m.status = fmt.Sprintf("%d paused session%s will end  %s  q again to quit", n, plural(n), sep)
+		m.status = fmt.Sprintf("%d paused session%s will end  %s  %s again to quit", n, plural(n), sep, m.keys.show("list", "quit"))
 		return m, nil
 	}
 	m.saveState()
@@ -559,7 +565,7 @@ func (m Model) jobDone(msg jobMsg) (tea.Model, tea.Cmd) {
 	case msg.err != nil:
 		m.fail("%s: %v", j.Agent, msg.err)
 	case j.State == jobs.Paused:
-		m.status = "paused  " + sep + "  ↵ goes back to it"
+		m.status = "paused  " + sep + "  " + m.keys.show("list", "open") + " goes back to it"
 	case j.Name != "" && j.SessionID == "":
 		m.fail("no new %s session was saved, so the name %q was not kept", j.Agent, j.Name)
 	default:
@@ -569,26 +575,29 @@ func (m Model) jobDone(msg jobMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateRead(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "v", "q":
-		m.mode = modeList
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m.quit(false)
-	case "j", "down":
-		m.scroll++
-	case "k", "up":
-		m.scroll--
-	case " ", "pgdown", "f":
-		m.scroll += max(1, m.bodyRows()-2)
-	case "b", "pgup":
-		m.scroll -= max(1, m.bodyRows()-2)
-	case "g", "home":
-		m.scroll = 0
-	case "G", "end":
-		m.scroll = 1 << 30
-	case "y":
-		m.copyOpening()
 	}
-	m.scroll = min(max(0, m.scroll), max(0, len(m.readLines())-m.bodyRows()))
+	switch m.keys.action("details", msg) {
+	case "back":
+		m.mode = modeList
+	case "down":
+		m.scroll++
+	case "up":
+		m.scroll--
+	case "page_down":
+		m.scroll += max(1, m.bodyRows()-2)
+	case "page_up":
+		m.scroll -= max(1, m.bodyRows()-2)
+	case "top":
+		m.scroll = 0
+	case "bottom":
+		m.scroll = 1 << 30
+	case "copy":
+		if m.mode == modeRead {
+			m.copyOpening()
+		}
+	}
+	m.scroll = min(max(0, m.scroll), max(0, len(m.pageLines())-m.bodyRows()-1))
 	return m, nil
 }

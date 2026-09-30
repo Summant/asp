@@ -14,6 +14,7 @@ import (
 	"github.com/atotto/clipboard"
 	osc52 "github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/summant/asp/internal/config"
 	"github.com/summant/asp/internal/jobs"
 	"github.com/summant/asp/internal/source"
 	"github.com/summant/asp/internal/store"
@@ -52,10 +53,20 @@ func main() { os.Exit(run()) }
 func run() int {
 	list := flag.Bool("list", false, "print sessions as tab-separated values and exit\n(agent, id, modified, messages, folder, name, groups, opening message)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	configPath := flag.String("config", config.Path(), "colour and key configuration `file`")
+	writeConfig := flag.Bool("write-config", false, "write a commented config file with every default, then exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("asp", versionString())
+		return 0
+	}
+	if *writeConfig {
+		if err := config.WriteExample(*configPath); err != nil {
+			fmt.Fprintln(os.Stderr, "asp:", err)
+			return 1
+		}
+		fmt.Println("wrote", *configPath)
 		return 0
 	}
 
@@ -72,9 +83,18 @@ func run() int {
 		return 0
 	}
 
+	// Only the picker uses colours and keys, so a config mistake never
+	// breaks --list.
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "asp: config", err)
+		return 1
+	}
+	ui.ApplyTheme(cfg.Colors)
+
 	host := jobs.NewHost(command)
 	defer host.Close() // quitting ends paused sessions
-	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText})
+	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText, Keys: cfg.Keys})
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "asp:", err)
 		return 1
