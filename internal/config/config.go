@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -161,7 +162,10 @@ func Default() Config {
 }
 
 // Load reads the file at path over the defaults. A missing file is not an
-// error.
+// error. Any error returned is a list of problems, not a failure: the
+// Config is always usable — every valid setting applied, the rest left at
+// their defaults — so a mistake, or a setting a newer or older asp does
+// not know, never stops asp from starting.
 func Load(path string) (Config, error) {
 	c := Default()
 	b, err := os.ReadFile(path)
@@ -174,17 +178,18 @@ func Load(path string) (Config, error) {
 	return Parse(string(b), path)
 }
 
-// Parse reads TOML text over the defaults; name is used in messages.
+// Parse reads TOML text over the defaults; name is used in messages. As
+// with Load, the Config is usable even when problems are returned.
 func Parse(text, name string) (Config, error) {
 	c := Default()
 	var f file
 	md, err := toml.Decode(text, &f)
 	if err != nil {
-		return c, fmt.Errorf("%s: %w", name, err)
+		return c, fmt.Errorf("%s: %w (using the defaults)", name, err)
 	}
 	var problems []string
 	for _, k := range md.Undecoded() {
-		problems = append(problems, fmt.Sprintf("unknown setting %q", k.String()))
+		problems = append(problems, fmt.Sprintf("unknown setting %q (ignored)", k.String()))
 	}
 	for role, v := range f.Colors {
 		if _, ok := c.Colors[role]; !ok {
@@ -198,6 +203,7 @@ func Parse(text, name string) (Config, error) {
 		}
 		c.Colors[role] = norm
 	}
+	userSet := map[string]map[string]bool{} // section → actions the file sets
 	for section, actions := range f.Keys {
 		known, ok := c.Keys[section]
 		if !ok {
@@ -219,18 +225,45 @@ func Parse(text, name string) (Config, error) {
 				norm = append(norm, n)
 			}
 			known[action] = norm
+			if userSet[section] == nil {
+				userSet[section] = map[string]bool{}
+			}
+			userSet[section][action] = true
 		}
 	}
-	// One key, one action, per section.
+	// One key, one action, per section. Keys the user chose win: a default
+	// that collides with one quietly gives it up (so a new action added in
+	// a later version never breaks a config written for an earlier one).
+	// Two actions the user bound to the same key is a mistake: the first
+	// in the list keeps it.
 	for _, s := range Sections {
 		owner := map[string]string{}
 		for _, b := range s.Bindings {
+			if !userSet[s.Name][b.Action] {
+				continue
+			}
+			var keep []string
 			for _, k := range c.Keys[s.Name][b.Action] {
-				if prev, dup := owner[k]; dup && prev != b.Action {
-					problems = append(problems, fmt.Sprintf("keys.%s: %q is bound to both %s and %s", s.Name, DisplayKey(k), prev, b.Action))
+				if prev, dup := owner[k]; dup {
+					problems = append(problems, fmt.Sprintf("keys.%s: %q is bound to both %s and %s; %s keeps it", s.Name, DisplayKey(k), prev, b.Action, prev))
+					continue
 				}
 				owner[k] = b.Action
+				keep = append(keep, k)
 			}
+			c.Keys[s.Name][b.Action] = keep
+		}
+		for _, b := range s.Bindings {
+			if userSet[s.Name][b.Action] {
+				continue
+			}
+			var keep []string
+			for _, k := range c.Keys[s.Name][b.Action] {
+				if _, taken := owner[k]; !taken {
+					keep = append(keep, k)
+				}
+			}
+			c.Keys[s.Name][b.Action] = keep
 		}
 	}
 	if len(problems) > 0 {
@@ -363,19 +396,142 @@ func Example() string {
 [colors]
 `)
 	for _, c := range Colors {
-		fmt.Fprintf(&b, "%-13s = %-10q # %s\n", c.Name, c.Default, c.Desc)
+		b.WriteString(colorLine(c))
 	}
 	for _, s := range Sections {
-		fmt.Fprintf(&b, "\n# %s\n[keys.%s]\n", s.Desc, s.Name)
+		b.WriteString(sectionHeader(s))
 		for _, bind := range s.Bindings {
-			quoted := make([]string, len(bind.Keys))
-			for i, k := range bind.Keys {
-				quoted[i] = strconv.Quote(k)
-			}
-			fmt.Fprintf(&b, "%-12s = %-32s # %s\n", bind.Action, "["+strings.Join(quoted, ", ")+"]", bind.Desc)
+			b.WriteString(bindingLine(bind))
 		}
 	}
 	return b.String()
+}
+
+func colorLine(c Color) string {
+	return fmt.Sprintf("%-13s = %-10q # %s\n", c.Name, c.Default, c.Desc)
+}
+
+func sectionHeader(s Section) string { return fmt.Sprintf("\n# %s\n[keys.%s]\n", s.Desc, s.Name) }
+
+func bindingLine(bind Binding) string {
+	quoted := make([]string, len(bind.Keys))
+	for i, k := range bind.Keys {
+		quoted[i] = strconv.Quote(k)
+	}
+	return fmt.Sprintf("%-12s = %-32s # %s\n", bind.Action, "["+strings.Join(quoted, ", ")+"]", bind.Desc)
+}
+
+var tableHeader = regexp.MustCompile(`^\s*\[([A-Za-z0-9_.]+)\]\s*(#.*)?$`)
+
+// AddMissing adds every setting text lacks — with its default and what it
+// does — to the right section, and returns the new text and what was
+// added. Nothing already in text changes, and the result must load to
+// exactly the same configuration; if it would not (a file laid out in a
+// way this cannot follow), an error is returned and nothing should be
+// written.
+func AddMissing(text string) (string, []string, error) {
+	var f file
+	if _, err := toml.Decode(text, &f); err != nil {
+		return "", nil, fmt.Errorf("the file does not parse, so it was left alone: %w", err)
+	}
+	// Missing settings are written with the values they have now: the
+	// defaults, except a default key that already gave way to one of the
+	// user's (see Parse) is written without it.
+	before, _ := Parse(text, "before")
+	type block struct {
+		table string   // "colors", "keys.list", …
+		head  string   // header to add if the table is not there
+		lines []string // settings to add
+		names []string // for the report
+	}
+	var blocks []block
+	col := block{table: "colors", head: "\n[colors]\n"}
+	for _, c := range Colors {
+		if _, ok := f.Colors[c.Name]; !ok {
+			col.lines = append(col.lines, colorLine(c))
+			col.names = append(col.names, "colors."+c.Name)
+		}
+	}
+	blocks = append(blocks, col)
+	for _, s := range Sections {
+		b := block{table: "keys." + s.Name, head: sectionHeader(s)}
+		for _, bind := range s.Bindings {
+			if _, ok := f.Keys[s.Name][bind.Action]; !ok {
+				now := bind
+				now.Keys = before.Keys[s.Name][bind.Action]
+				b.lines = append(b.lines, bindingLine(now))
+				b.names = append(b.names, "keys."+s.Name+"."+bind.Action)
+			}
+		}
+		blocks = append(blocks, b)
+	}
+
+	lines := strings.SplitAfter(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > 0 && !strings.HasSuffix(lines[len(lines)-1], "\n") {
+		lines[len(lines)-1] += "\n"
+	}
+	var added []string
+	var tail []string
+	for _, b := range blocks {
+		if len(b.lines) == 0 {
+			continue
+		}
+		added = append(added, b.names...)
+		// Find the table, and the last setting in it (before the next table).
+		at := -1
+		for i, l := range lines {
+			if m := tableHeader.FindStringSubmatch(l); m != nil && m[1] == b.table {
+				at = i
+				for j := i + 1; j < len(lines); j++ {
+					if tableHeader.MatchString(lines[j]) {
+						break
+					}
+					if t := strings.TrimSpace(lines[j]); t != "" && !strings.HasPrefix(t, "#") {
+						at = j
+					}
+				}
+				break
+			}
+		}
+		if at < 0 {
+			tail = append(tail, b.head)
+			tail = append(tail, b.lines...)
+			continue
+		}
+		lines = append(lines[:at+1], append(append([]string{}, b.lines...), lines[at+1:]...)...)
+	}
+	out := strings.Join(lines, "") + strings.Join(tail, "")
+
+	// The promise: same configuration as before, only now written out.
+	after, _ := Parse(out, "after")
+	if _, err := toml.Decode(out, &file{}); err != nil || !reflect.DeepEqual(before, after) {
+		return "", nil, errors.New("could not add the missing settings without changing the file's meaning; it was left alone")
+	}
+	return out, added, nil
+}
+
+// UpdateFile adds missing settings to the config file at path, keeping a
+// copy of the old file as path+".bak". It reports what was added.
+func UpdateFile(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out, added, err := AddMissing(string(b))
+	if err != nil || len(added) == 0 {
+		return nil, err
+	}
+	if err := os.WriteFile(path+".bak", b, 0o644); err != nil {
+		return nil, err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o644); err != nil {
+		return nil, err
+	}
+	return added, os.Rename(tmp, path)
 }
 
 // WriteExample writes Example to path, refusing to overwrite a file.

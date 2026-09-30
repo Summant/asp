@@ -41,6 +41,8 @@ type Deps struct {
 	// Agents are the agents installed here, whose sessions can be started;
 	// nil means both.
 	Agents []source.Agent
+	// Warnings are shown at start-up, after any data-file problems.
+	Warnings []string
 }
 
 type mode int
@@ -128,6 +130,13 @@ func New(items []Item, d Deps) Model {
 	m.attachJobs()
 	m.reorder()
 	m.selectKey(saved.Last)
+	if p := append(d.Store.Problems(), d.Warnings...); len(p) > 0 {
+		more := ""
+		if len(p) > 1 {
+			more = fmt.Sprintf(" (and %d more)", len(p)-1)
+		}
+		m.fail("%s%s", p[0], more) // stays until another message replaces it
+	}
 	return m
 }
 
@@ -429,6 +438,10 @@ func (m Model) updateList(msg tea.KeyMsg, confirm bool) (tea.Model, tea.Cmd) {
 			m.openInput("")
 		}
 	case "group_color":
+		if g, ok := m.tabGroup(); ok { // on a group tab: that group
+			m.askColor(g)
+			break
+		}
 		if it, ok := m.current(); ok && !it.placeholder() {
 			switch len(it.Groups) {
 			case 0:

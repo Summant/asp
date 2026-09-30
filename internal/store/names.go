@@ -5,8 +5,10 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,9 +16,10 @@ import (
 )
 
 type Store struct {
-	path  string
-	mu    sync.Mutex
-	names map[string]string // "<agent>:<session-id>" -> name
+	path     string
+	mu       sync.Mutex
+	names    map[string]string // "<agent>:<session-id>" -> name
+	namesErr error             // names.json exists but could not be read
 }
 
 // Open loads ~/.config/asp/names.json, importing the Python prototype's
@@ -38,12 +41,15 @@ func Open() (*Store, error) {
 // ever read: the prototype still uses it.
 func OpenAt(path, legacy string) (*Store, error) {
 	s := &Store{path: path, names: map[string]string{}}
-	b, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		_ = json.Unmarshal(b, &s.names) // a corrupt file starts empty rather than failing
+	if _, err := os.Stat(path); err == nil {
+		// An unreadable file is kept as it is and never overwritten; asp
+		// runs without names and says so (see Problems).
+		s.namesErr = readJSON(path, &s.names)
+		if s.namesErr != nil {
+			s.names = map[string]string{}
+		}
 		return s, nil
-	case !errors.Is(err, fs.ErrNotExist):
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -92,6 +98,9 @@ func (s *Store) Set(agent, id, name string) error {
 }
 
 func (s *Store) save() error {
+	if s.namesErr != nil {
+		return s.namesErr
+	}
 	s.mu.Lock()
 	b, err := json.MarshalIndent(s.names, "", "  ")
 	s.mu.Unlock()
@@ -99,6 +108,43 @@ func (s *Store) save() error {
 		return err
 	}
 	return writeAtomic(s.path, b)
+}
+
+// readJSON loads path into v. A missing or empty file is fine — v stays
+// as it is. A file that exists but does not parse is an error: callers
+// must then not write to it, so nothing a user saved is ever replaced by
+// less (after a bad edit by hand, or a format a future asp misreads).
+func readJSON(path string, v any) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("%s could not be read (%v); asp will not change it until it is fixed or moved", path, err)
+	}
+	return nil
+}
+
+// Problems lists data files that exist but could not be read. asp keeps
+// working without them and never writes to them.
+func (s *Store) Problems() []string {
+	var out []string
+	check := func(path string, v any) {
+		if err := readJSON(path, v); err != nil {
+			out = append(out, err.Error())
+		}
+	}
+	check(s.path, &map[string]string{})
+	check(s.groupsPath(), &map[string][]string{})
+	check(s.colorsPath(), &map[string]string{})
+	check(s.statePath(), &State{})
+	return out
 }
 
 // writeAtomic writes b to path so a crash mid-write leaves the previous file

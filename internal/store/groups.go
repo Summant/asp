@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -14,12 +13,14 @@ import (
 
 func (s *Store) groupsPath() string { return filepath.Join(filepath.Dir(s.path), "groups.json") }
 
-func (s *Store) loadGroups() map[string][]string {
+// loadGroups reads groups.json; on error the map is empty and must not be
+// saved back.
+func (s *Store) loadGroups() (map[string][]string, error) {
 	g := map[string][]string{}
-	if b, err := os.ReadFile(s.groupsPath()); err == nil {
-		_ = json.Unmarshal(b, &g)
+	if err := readJSON(s.groupsPath(), &g); err != nil {
+		return map[string][]string{}, err
 	}
-	return g
+	return g, nil
 }
 
 func (s *Store) saveGroups(g map[string][]string) error {
@@ -36,7 +37,8 @@ func (s *Store) GroupsOf(agent, id string) []string {
 	defer s.mu.Unlock()
 	k := key(agent, id)
 	var out []string
-	for name, members := range s.loadGroups() {
+	groups, _ := s.loadGroups()
+	for name, members := range groups {
 		if slices.Contains(members, k) {
 			out = append(out, name)
 		}
@@ -50,7 +52,8 @@ func (s *Store) Groups() map[string][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string][]string{}
-	for name, members := range s.loadGroups() {
+	groups, _ := s.loadGroups()
+	for name, members := range groups {
 		for _, k := range members {
 			out[k] = append(out[k], name)
 		}
@@ -66,7 +69,8 @@ func (s *Store) GroupNames() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []string
-	for name := range s.loadGroups() {
+	groups, _ := s.loadGroups()
+	for name := range groups {
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -77,7 +81,10 @@ func (s *Store) GroupNames() []string {
 func (s *Store) AddToGroup(agent, id, group string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	g := s.loadGroups()
+	g, err := s.loadGroups()
+	if err != nil {
+		return err
+	}
 	k := key(agent, id)
 	if slices.Contains(g[group], k) {
 		return nil
@@ -90,11 +97,14 @@ func (s *Store) AddToGroup(agent, id, group string) error {
 func (s *Store) RemoveFromGroup(agent, id, group string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	g := s.loadGroups()
+	g, err := s.loadGroups()
+	if err != nil {
+		return err
+	}
 	g[group] = slices.DeleteFunc(g[group], func(m string) bool { return m == key(agent, id) })
 	if len(g[group]) == 0 {
 		delete(g, group)
-		if c := s.loadColors(); c[group] != "" { // a group that is gone keeps no colour
+		if c, err := s.loadColors(); err == nil && c[group] != "" { // a group that is gone keeps no colour
 			delete(c, group)
 			if b, err := json.MarshalIndent(c, "", "  "); err == nil {
 				_ = writeAtomic(s.colorsPath(), b)
@@ -109,26 +119,30 @@ func (s *Store) RemoveFromGroup(agent, id, group string) error {
 
 func (s *Store) colorsPath() string { return filepath.Join(filepath.Dir(s.path), "group-colors.json") }
 
-func (s *Store) loadColors() map[string]string {
+func (s *Store) loadColors() (map[string]string, error) {
 	c := map[string]string{}
-	if b, err := os.ReadFile(s.colorsPath()); err == nil {
-		_ = json.Unmarshal(b, &c)
+	if err := readJSON(s.colorsPath(), &c); err != nil {
+		return map[string]string{}, err
 	}
-	return c
+	return c, nil
 }
 
 // GroupColors maps each group that has one to its colour.
 func (s *Store) GroupColors() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadColors()
+	c, _ := s.loadColors()
+	return c
 }
 
 // SetGroupColor sets a group's colour; "" removes it.
 func (s *Store) SetGroupColor(group, color string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c := s.loadColors()
+	c, err := s.loadColors()
+	if err != nil {
+		return err
+	}
 	if color == "" {
 		delete(c, group)
 	} else {

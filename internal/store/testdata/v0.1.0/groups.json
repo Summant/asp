@@ -1,0 +1,9 @@
+{
+  "arch": [
+    "claude:ba59df17-e3ef-4c5f-9ceb-cf77500d9f72",
+    "codex:01a0efa1-9c6d-7141-9237-f46909ef3743"
+  ],
+  "wm": [
+    "claude:ba59df17-e3ef-4c5f-9ceb-cf77500d9f72"
+  ]
+}

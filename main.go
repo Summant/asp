@@ -56,6 +56,8 @@ func run() int {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	configPath := flag.String("config", config.Path(), "colour and key configuration `file`")
 	writeConfig := flag.Bool("write-config", false, "write a commented config file with every default, then exit")
+	updateConfig := flag.Bool("update-config", false, "add settings missing from the config file (after an update), changing nothing else")
+	checkConfig := flag.Bool("check-config", false, "report problems in the config file, then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -68,6 +70,27 @@ func run() int {
 			return 1
 		}
 		fmt.Println("wrote", *configPath)
+		return 0
+	}
+	if *updateConfig {
+		added, err := config.UpdateFile(*configPath)
+		switch {
+		case err != nil:
+			fmt.Fprintln(os.Stderr, "asp:", err)
+			return 1
+		case len(added) == 0:
+			fmt.Println(*configPath, "already has every setting")
+		default:
+			fmt.Printf("added %d settings to %s (old file kept as %s.bak):\n  %s\n", len(added), *configPath, *configPath, strings.Join(added, "\n  "))
+		}
+		return 0
+	}
+	if *checkConfig {
+		if _, err := config.Load(*configPath); err != nil {
+			fmt.Fprintln(os.Stderr, "asp: config", err)
+			return 1
+		}
+		fmt.Println(*configPath, "is fine")
 		return 0
 	}
 
@@ -85,18 +108,27 @@ func run() int {
 	}
 
 	// Only the picker uses colours and keys, so a config mistake never
-	// breaks --list.
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "asp: config", err)
-		return 1
+	// breaks --list. Nor does it stop the picker: valid settings apply,
+	// the rest keep their defaults, and the problems are shown.
+	cfg, cfgErr := config.Load(*configPath)
+	var warnings []string
+	if cfgErr != nil {
+		warnings = append(warnings, "config: "+strings.SplitN(cfgErr.Error(), "\n", 2)[0]+" — asp --check-config for details")
 	}
 	ui.ApplyTheme(cfg.Colors)
 
 	host := jobs.NewHost(command)
 	defer host.Close() // quitting ends paused sessions
-	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText, Keys: cfg.Keys, Agents: installed()})
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	m := ui.New(reload(), ui.Deps{Store: st, Reload: reload, Host: host, Copy: copyText, Keys: cfg.Keys, Agents: installed(), Warnings: warnings})
+	_, err = tea.NewProgram(m, tea.WithAltScreen()).Run()
+	// Repeat anything wrong where it stays visible.
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, "asp: config", cfgErr)
+	}
+	for _, p := range st.Problems() {
+		fmt.Fprintln(os.Stderr, "asp:", p)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "asp:", err)
 		return 1
 	}

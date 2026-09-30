@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 )
 
@@ -23,13 +22,16 @@ func (s *Store) statePath() string { return filepath.Join(filepath.Dir(s.path), 
 // State returns the saved state; a missing or corrupt file gives the zero State.
 func (s *Store) State() State {
 	var st State
-	if b, err := os.ReadFile(s.statePath()); err == nil {
-		_ = json.Unmarshal(b, &st)
+	if readJSON(s.statePath(), &st) != nil {
+		return State{}
 	}
 	return st
 }
 
 func (s *Store) SaveState(st State) error {
+	if err := readJSON(s.statePath(), &State{}); err != nil {
+		return err // keep an unreadable file for the user to look at
+	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err

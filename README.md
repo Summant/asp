@@ -41,8 +41,31 @@ that is on your `PATH`, or install straight into `~/.local/bin`:
 GOBIN=~/.local/bin go install github.com/summant/asp@latest
 ```
 
-Go fetches every library asp needs by itself. Update by running the same
-command again.
+Go fetches every library asp needs by itself.
+
+### Updating
+
+Run the same `go install` command again. That replaces only the `asp`
+program: your names, groups, colours, tabs and config live in
+`~/.config/asp` and are never touched by an update. After updating:
+
+```sh
+asp --update-config   # add any new settings to your config.toml (optional)
+```
+
+It adds each new setting with its default and a comment, changes nothing
+you have set, and keeps the old file as `config.toml.bak`. Without it, new
+settings simply use their defaults.
+
+asp is built to never lose that data:
+
+- Files written by earlier versions are read as they are (the tests keep
+  copies of each version's formats).
+- A file asp cannot read — say, after a bad edit by hand — is reported
+  and left exactly as it is; asp never writes over it.
+- Keys you set always win: if a new version gives a new action a default
+  key you already use, the new action gives it up. Config mistakes are
+  warnings, never a reason not to start (`asp --check-config` lists them).
 
 From a clone:
 
@@ -59,6 +82,8 @@ asp            # the picker
 asp --list     # tab-separated: agent, id, modified, messages, folder, name, groups, opening
 asp --version
 asp --write-config   # write ~/.config/asp/config.toml with every default, commented
+asp --update-config  # add settings a newer asp introduced, keeping yours
+asp --check-config   # list problems in the config
 asp --config FILE    # use another config file
 ```
 
